@@ -1,11 +1,14 @@
 module Main where
 
 import System.Environment (getArgs, getProgName)
-import System.Exit (die)
+import System.Exit (die, exitSuccess)
 import System.IO (appendFile)
 import System.Process (readProcess)
+import Control.Monad (when)
+
 import Lexer (lexer)
 import Parser (parser)
+import CLI(getOptions, Options(..))
 
 main :: IO ()
 main = do
@@ -14,27 +17,19 @@ main = do
     let fullCommand = unwords (prog : args)  -- combine program name + args into a single string
     appendFile "hscc.log" (fullCommand ++ "\n")  -- append to the log file
     
-    case args of
-        [input, "--lex"] -> clex input
-        ["--lex", input] -> clex input
-        ["--parse", input] -> cparse input
+    options <- getOptions
 
-
-clex :: String -> IO ()
-clex filename = do
-    content <- readProcess "gcc" ["-E", "-P", filename] ""
-    case lexer content of 
+    content <- readProcess "gcc" ["-E", "-P", inputFile options] ""
+    
+    tokens <- case lexer content of 
         Left errormsg -> die errormsg
-        Right tokens -> mapM_ print tokens
+        Right tokens -> return tokens
 
+    when (lexOnly options) $ do
+        mapM_ print tokens
+        exitSuccess
 
-
-cparse :: String -> IO ()
-cparse filename = do
-    content <- readProcess "gcc" ["-E", "-P", filename] ""
-    case lexer content of 
+    case parser tokens of
         Left errormsg -> die errormsg
-        Right tokens -> case parser tokens of
-            Left errormsg -> die errormsg
-            Right _ -> print "Success!"
-
+        Right _ -> print "Success!"
+        
