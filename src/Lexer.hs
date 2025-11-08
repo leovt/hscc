@@ -19,7 +19,9 @@ data Token
     | TokOpenBrace  -- {
     | TokCloseBrace -- }
     | TokSemicolon  -- ;
-
+    | TokTilde      -- ~
+    | TokMinus      -- -
+    | TokMinusMinus -- --
     deriving (Show, Eq)
 
 data Position = Position {line::Int, column::Int}
@@ -47,7 +49,8 @@ enum_src = snd . mapAccumL step (1,1)
 data LexerState 
     = LS_Start
     | LS_Ident Position String
-    | LS_Integer Position Int 
+    | LS_Integer Position Int
+    | LS_Punctuation Position String
 
 lexer :: String -> Either String [LocatedToken]
 lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eof
@@ -58,6 +61,7 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
             | c `elem` whitespace  = (LS_Start, Right tokens)
             | c `elem` digits      = (LS_Integer pos (read [c]), Right tokens)
             | c `elem` id_start    = (LS_Ident pos [c], Right tokens)
+            | c `elem` punctuation = (LS_Punctuation pos [c], Right tokens)
             | c == '('             = (LS_Start, Right ((TokOpenParen,  Span pos pos):tokens)) 
             | c == ')'             = (LS_Start, Right ((TokCloseParen, Span pos pos):tokens)) 
             | c == '{'             = (LS_Start, Right ((TokOpenBrace,  Span pos pos):tokens)) 
@@ -71,7 +75,11 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
         step (LS_Ident start ident, Right tokens) (c, pos)
             | c `elem` id_continue = (LS_Ident start (ident++[c]), Right tokens)
             | otherwise            = step (LS_Start, Right ((map_keyword ident, Span start pos):tokens)) (c, pos)
+        step (LS_Punctuation start punct, Right tokens) (c, pos) = case punctuationToken (punct ++ [c]) of
+                Just _  -> (LS_Punctuation start (punct++[c]), Right tokens)
+                Nothing -> let Just token = punctuationToken punct in step (LS_Start, Right ((token , Span start pos):tokens)) (c, pos)
         
+            
         map_keyword "int" = TokKeyInt
         map_keyword "void" = TokKeyVoid
         map_keyword "return" = TokKeyReturn
@@ -85,3 +93,9 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
         id_start = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
         digits = "0123456789"
         id_continue = id_start ++ digits
+        punctuation = "-~"
+
+        punctuationToken "-" = Just TokMinus
+        punctuationToken "--" = Just TokMinusMinus
+        punctuationToken "~" = Just TokTilde
+        punctuationToken _ = Nothing

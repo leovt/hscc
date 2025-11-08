@@ -29,6 +29,12 @@ data Statement
 
 data Expression
     = Constant Int
+    | Unary UnaryOperator Expression
+    deriving (Show)
+
+data UnaryOperator
+    = Complement
+    | Negate
     deriving (Show)
 
 parse_program :: [Token] -> Maybe Program
@@ -56,5 +62,16 @@ parse_statement _ = Nothing
 
 parse_expression :: [Token] -> Maybe (Expression, [Token])
 parse_expression ((TokInt n):tail) = return (Constant n, tail)
+parse_expression (TokMinus:tail) = do
+    (expr, rest) <- parse_expression tail
+    return (Unary Negate expr, rest)
+parse_expression (TokTilde:tail) = do
+    (expr, rest) <- parse_expression tail
+    return (Unary Complement expr, rest)
+parse_expression (TokOpenParen:tail) = do
+    (expr, rest) <- parse_expression tail
+    case rest of
+        TokCloseParen:rest' -> return (expr, rest')
+        _ -> Nothing
 parse_expression _ = Nothing
 
