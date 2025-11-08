@@ -31,5 +31,5 @@ main = do
 
     case parser tokens of
         Left errormsg -> die errormsg
-        Right _ -> print "Success!"
+        Right ast -> print ast
         
