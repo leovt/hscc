@@ -1,5 +1,9 @@
 module Parser
     ( parser
+    , Program(..)
+    , Function(..)
+    , Statement(..)
+    , Expression(..)
     ) where
 
 import Lexer (LocatedToken, Token(..))

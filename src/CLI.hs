@@ -7,6 +7,7 @@ data Options = Options
     , outputFile  :: Maybe FilePath
     , lexOnly     :: Bool
     , parseOnly   :: Bool
+    , codegenOnly   :: Bool
     }
     deriving (Show)
 
@@ -25,11 +26,14 @@ optionsParser = Options
        <> help "Run lexer only" )
     <*> switch
         ( long "parse"
-       <> help "Run parser (after lexing)" )
+       <> help "Stop after parser" )
+    <*> switch
+        ( long "codegen"
+       <> help "Stop after codegen" )
 
 getOptions = execParser opts
   where
     opts = info (optionsParser <**> helper)
       ( fullDesc
-     <> progDesc "Print a greeting for TARGET"
-     <> header "hello - a test for optparse-applicative" )
+     <> progDesc "compile INPUT"
+     <> header "hscc" )

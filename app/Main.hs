@@ -1,13 +1,15 @@
 module Main where
 
 import System.Environment (getArgs, getProgName)
+import System.FilePath (replaceExtension)
 import System.Exit (die, exitSuccess)
 import System.IO (appendFile)
-import System.Process (readProcess)
+import System.Process (readProcess, callProcess)
 import Control.Monad (when)
 
 import Lexer (lexer)
-import Parser (parser)
+import Parser (parser, Program)
+import AsmAst (translateProgram, emitProgram)
 import CLI(getOptions, Options(..))
 
 main :: IO ()
@@ -29,7 +31,27 @@ main = do
         mapM_ print tokens
         exitSuccess
 
-    case parser tokens of
+    ast <- case parser tokens of
         Left errormsg -> die errormsg
-        Right ast -> print ast
-        
+        Right ast -> return ast
+
+    when (parseOnly options) $ do
+        print ast
+        exitSuccess
+
+    let asmast = (translateProgram ast)
+
+    when (codegenOnly options) $ do
+        print asmast
+        exitSuccess
+
+    let asmoutput = replaceExtension (inputFile options) ".s"
+
+    writeFile asmoutput (unlines (emitProgram asmast))
+
+    let executable = case (outputFile options) of
+            Just filename -> filename
+            Nothing -> replaceExtension (inputFile options) ""
+
+    callProcess "gcc" [asmoutput, "-o", executable]
+
