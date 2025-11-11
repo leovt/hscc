@@ -4,7 +4,7 @@ module AsmAst
     )
 where
 
-import qualified Parser as P
+import qualified TAC as T
 
 data Program
     = Program Function  
@@ -24,17 +24,20 @@ data Operand
     | Register
     deriving (Show)
 
-translateProgram :: P.Program -> Program
-translateProgram (P.Program fun) = Program (translateFunction fun)
+translateProgram :: T.Program -> Program
+translateProgram (T.Program fun) = Program (translateFunction fun)
 
-translateFunction :: P.Function -> Function
-translateFunction (P.Function name stmts) = Function name $ concatMap translateStatement stmts
+translateFunction :: T.Function -> Function
+translateFunction (T.Function name stmts) = Function name $ concatMap translateInstruction stmts
 
-translateStatement :: P.Statement -> [Instruction]
-translateStatement (P.ReturnStatement expression) = [Mov (translateExpression expression) Register, Ret] 
+translateInstruction :: T.Instruction -> [Instruction]
+translateInstruction (T.Return value) = [
+    Mov (translateValue value) Register,
+    Ret]
+    
 
-translateExpression :: P.Expression -> Operand
-translateExpression (P.Constant n) = Imm n
+translateValue :: T.Value -> Operand
+translateValue (T.Constant c) = Imm c
 
 
 

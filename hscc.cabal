@@ -75,7 +75,8 @@ executable hscc
         base ^>=4.18.3.0,
         process,
         optparse-applicative,
-        filepath
+        filepath,
+        mtl
 
     -- Directories containing source files.
     hs-source-dirs:   app, src
@@ -83,4 +84,4 @@ executable hscc
     -- Base language which the package is written in.
     default-language: Haskell2010
 
-    other-modules:       Lexer, Parser, CLI, AsmAst
+    other-modules:       Lexer, Parser, CLI, AsmAst, TAC

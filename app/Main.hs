@@ -11,6 +11,7 @@ import Lexer (lexer)
 import Parser (parser, Program)
 import AsmAst (translateProgram, emitProgram)
 import CLI(getOptions, Options(..))
+import TAC
 
 main :: IO ()
 main = do
@@ -39,7 +40,13 @@ main = do
         print ast
         exitSuccess
 
-    let asmast = (translateProgram ast)
+    let tac = (TAC.translate ast)
+
+    when (tackyOnly options) $ do
+        print tac
+        exitSuccess
+
+    let asmast = (translateProgram tac)
 
     when (codegenOnly options) $ do
         print asmast

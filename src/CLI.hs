@@ -7,6 +7,7 @@ data Options = Options
     , outputFile  :: Maybe FilePath
     , lexOnly     :: Bool
     , parseOnly   :: Bool
+    , tackyOnly   :: Bool
     , codegenOnly   :: Bool
     }
     deriving (Show)
@@ -27,6 +28,9 @@ optionsParser = Options
     <*> switch
         ( long "parse"
        <> help "Stop after parser" )
+    <*> switch
+        ( long "tacky"
+       <> help "Stop after TAC generation" )
     <*> switch
         ( long "codegen"
        <> help "Stop after codegen" )

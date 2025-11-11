@@ -4,6 +4,7 @@ module Parser
     , Function(..)
     , Statement(..)
     , Expression(..)
+    , UnaryOperator(..)
     ) where
 
 import Lexer (LocatedToken, Token(..))
