@@ -22,6 +22,10 @@ data Token
     | TokTilde      -- ~
     | TokMinus      -- -
     | TokMinusMinus -- --
+    | TokPlus       -- +
+    | TokAsterisk   -- *
+    | TokSlash      -- /
+    | TokPercent    -- %
     deriving (Show, Eq)
 
 data Position = Position {line::Int, column::Int}
@@ -93,9 +97,13 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
         id_start = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
         digits = "0123456789"
         id_continue = id_start ++ digits
-        punctuation = "-~"
+        punctuation = "-~+*/%"
 
         punctuationToken "-" = Just TokMinus
         punctuationToken "--" = Just TokMinusMinus
         punctuationToken "~" = Just TokTilde
+        punctuationToken "+" = Just TokPlus
+        punctuationToken "*" = Just TokAsterisk
+        punctuationToken "/" = Just TokSlash
+        punctuationToken "%" = Just TokPercent
         punctuationToken _ = Nothing

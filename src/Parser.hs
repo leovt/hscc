@@ -31,12 +31,36 @@ data Statement
 data Expression
     = Constant Int
     | Unary UnaryOperator Expression
+    | Binary BinaryOperator Expression Expression
     deriving (Show)
 
 data UnaryOperator
     = Complement
     | Negate
     deriving (Show)
+
+data BinaryOperator
+    = Add
+    | Subtract
+    | Multiply
+    | Divide
+    | Remainder
+    deriving (Show)
+
+binop :: Token -> Maybe BinaryOperator
+binop TokAsterisk = Just Multiply
+binop TokSlash    = Just Divide
+binop TokPercent  = Just Remainder
+binop TokPlus     = Just Add
+binop TokMinus    = Just Subtract
+binop _           = Nothing
+
+precedence :: BinaryOperator -> Int
+precedence Multiply    = 50
+precedence Divide      = 50
+precedence Remainder   = 50
+precedence Add         = 45
+precedence Subtract    = 45
 
 parse_program :: [Token] -> Maybe Program
 parse_program tokens = do
@@ -61,18 +85,37 @@ parse_statement (TokKeyReturn:tail) = do
         _ -> Nothing
 parse_statement _ = Nothing
 
-parse_expression :: [Token] -> Maybe (Expression, [Token])
-parse_expression ((TokInt n):tail) = return (Constant n, tail)
-parse_expression (TokMinus:tail) = do
-    (expr, rest) <- parse_expression tail
+parse_factor :: [Token] -> Maybe (Expression, [Token])
+parse_factor ((TokInt n):tail) = return (Constant n, tail)
+parse_factor (TokMinus:tail) = do
+    (expr, rest) <- parse_factor tail
     return (Unary Negate expr, rest)
-parse_expression (TokTilde:tail) = do
-    (expr, rest) <- parse_expression tail
+parse_factor (TokTilde:tail) = do
+    (expr, rest) <- parse_factor tail
     return (Unary Complement expr, rest)
-parse_expression (TokOpenParen:tail) = do
+parse_factor (TokOpenParen:tail) = do
     (expr, rest) <- parse_expression tail
     case rest of
         TokCloseParen:rest' -> return (expr, rest')
         _ -> Nothing
-parse_expression _ = Nothing
+parse_factor _ = Nothing
 
+parse_expression :: [Token] -> Maybe (Expression, [Token])
+parse_expression = parse_expression_prec 0 
+    where
+        parse_expression_prec :: Int -> [Token] -> Maybe (Expression, [Token])
+        parse_expression_prec min_prec tokens = do
+            (left, rest) <- parse_factor tokens
+            parse_rhs min_prec left rest
+
+        parse_rhs :: Int -> Expression -> [Token] -> Maybe (Expression, [Token])
+        parse_rhs min_prec left (token:rest) = 
+            case binop token of
+                Just operator -> 
+                    let prec = precedence operator
+                    in if prec < min_prec 
+                        then Just (left, (token:rest))
+                        else do
+                            (right, rest') <- parse_expression_prec (1 + prec) rest
+                            parse_rhs min_prec (Binary operator left right) rest'
+                Nothing -> Just (left, (token:rest))
