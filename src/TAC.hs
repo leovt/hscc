@@ -47,30 +47,29 @@ newId = do
 
 translate :: P.Program -> Program
 translate program = evalState (translateProgram program) initState
-  where
-    initState = TransState { nextID = 1001 }
+    where
+        initState = TransState { nextID = 1001 }
 
+        translateProgram :: P.Program -> TransM Program
+        translateProgram (P.Program fun) = do 
+            fun' <- translateFunction fun
+            return (Program fun')
 
-translateProgram :: P.Program -> TransM Program
-translateProgram (P.Program fun) = do 
-    fun' <- translateFunction fun
-    return (Program fun')
+        translateFunction :: P.Function -> TransM Function
+        translateFunction (P.Function name stmts) = do
+            instructions <- concat <$> mapM translateStatement stmts
+            return (Function name instructions)
 
-translateFunction :: P.Function -> TransM Function
-translateFunction (P.Function name stmts) = do
-    instructions <- concat <$> mapM translateStatement stmts
-    return (Function name instructions)
+        translateStatement :: P.Statement -> TransM [Instruction]
+        translateStatement (P.ReturnStatement expression) = do
+            (instructions, value) <- translateExpression expression
+            return (instructions ++ [Return value])
 
-translateStatement :: P.Statement -> TransM [Instruction]
-translateStatement (P.ReturnStatement expression) = do
-    (instructions, value) <- translateExpression expression
-    return (instructions ++ [Return value])
-
-translateExpression :: P.Expression -> TransM ([Instruction], Value)
-translateExpression (P.Constant c) = do
-    return ([], Constant c)
-translateExpression (P.Unary op expression) = do
-    (instructions, value) <- translateExpression expression
-    varid <- newId
-    let destination = Variable varid Nothing
-    return (instructions ++ [Unary op value destination], destination)
+        translateExpression :: P.Expression -> TransM ([Instruction], Value)
+        translateExpression (P.Constant c) = do
+            return ([], Constant c)
+        translateExpression (P.Unary op expression) = do
+            (instructions, value) <- translateExpression expression
+            varid <- newId
+            let destination = Variable varid Nothing
+            return (instructions ++ [Unary op value destination], destination)
