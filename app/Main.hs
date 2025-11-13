@@ -9,7 +9,7 @@ import Control.Monad (when)
 
 import Lexer (lexer)
 import Parser (parser, Program)
-import AsmAst (translateProgram, emitProgram)
+import AsmAst (translateTACtoASM, emitProgram)
 import CLI(getOptions, Options(..))
 import TAC
 
@@ -46,7 +46,7 @@ main = do
         print tac
         exitSuccess
 
-    let asmast = (translateProgram tac)
+    let asmast = (translateTACtoASM tac)
 
     when (codegenOnly options) $ do
         print asmast

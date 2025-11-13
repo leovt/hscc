@@ -76,7 +76,8 @@ executable hscc
         process,
         optparse-applicative,
         filepath,
-        mtl
+        mtl,
+        containers
 
     -- Directories containing source files.
     hs-source-dirs:   app, src

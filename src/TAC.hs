@@ -4,6 +4,7 @@ module TAC
     , Function(..)
     , Instruction(..)
     , Value(..)
+    , VarId(..)
     )
 where
 
@@ -68,3 +69,8 @@ translateStatement (P.ReturnStatement expression) = do
 translateExpression :: P.Expression -> TransM ([Instruction], Value)
 translateExpression (P.Constant c) = do
     return ([], Constant c)
+translateExpression (P.Unary op expression) = do
+    (instructions, value) <- translateExpression expression
+    varid <- newId
+    let destination = Variable varid Nothing
+    return (instructions ++ [Unary op value destination], destination)
