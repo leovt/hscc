@@ -33,6 +33,14 @@ data Token
     | TokDblLess
     | TokGreater
     | TokDblGreater
+    | TokBang
+    | TokBangEqual
+    | TokDblAmp
+    | TokDblPipe
+    | TokEqual
+    | TokDblEqual
+    | TokLessEqual
+    | TokGreaterEqual
     deriving (Show, Eq)
 
 data Position = Position {line::Int, column::Int}
@@ -104,7 +112,7 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
         id_start = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
         digits = "0123456789"
         id_continue = id_start ++ digits
-        punctuation = "-~+*/%&|^<>"
+        punctuation = "-~+*/%&|^<>!="
 
         punctuationToken "-"  = Just TokMinus
         punctuationToken "--" = Just TokMinusMinus
@@ -120,4 +128,12 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
         punctuationToken "<<" = Just TokDblLess
         punctuationToken ">"  = Just TokGreater
         punctuationToken ">>" = Just TokDblGreater
+        punctuationToken "!"  = Just TokBang
+        punctuationToken "!=" = Just TokBangEqual
+        punctuationToken "&&" = Just TokDblAmp
+        punctuationToken "||" = Just TokDblPipe
+        punctuationToken "="  = Just TokEqual
+        punctuationToken "==" = Just TokDblEqual
+        punctuationToken "<=" = Just TokLessEqual
+        punctuationToken ">=" = Just TokGreaterEqual
         punctuationToken _ = Nothing

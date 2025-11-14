@@ -38,6 +38,7 @@ data Expression
 data UnaryOperator
     = Complement
     | Negate
+    | LogicNot
     deriving (Show)
 
 data BinaryOperator
@@ -51,6 +52,14 @@ data BinaryOperator
     | BitXor
     | ShiftLeft
     | ShiftRight
+    | LogicAnd
+    | LogicOr
+    | Equal
+    | NotEqual
+    | Less
+    | Greater
+    | LessOrEqual
+    | GreaterOrEqual
     deriving (Show)
 
 binop :: Token -> Maybe BinaryOperator
@@ -64,6 +73,14 @@ binop TokPipe       = Just BitOr
 binop TokCircumflex = Just BitXor
 binop TokDblLess    = Just ShiftLeft
 binop TokDblGreater = Just ShiftRight
+binop TokDblAmp     = Just LogicAnd
+binop TokDblPipe    = Just LogicOr
+binop TokDblEqual   = Just Equal
+binop TokBangEqual  = Just NotEqual
+binop TokLess       = Just Less
+binop TokGreater    = Just Greater
+binop TokLessEqual  = Just LessOrEqual
+binop TokGreaterEqual = Just GreaterOrEqual
 binop _             = Nothing
 
 precedence :: BinaryOperator -> Int
@@ -74,9 +91,17 @@ precedence Add         = 45
 precedence Subtract    = 45
 precedence ShiftLeft   = 40
 precedence ShiftRight  = 40
+precedence Greater     = 35
+precedence Less        = 35
+precedence GreaterOrEqual = 35
+precedence LessOrEqual = 35
+precedence Equal       = 30
+precedence NotEqual    = 30
 precedence BitAnd      = 25
 precedence BitXor      = 24
 precedence BitOr       = 23
+precedence LogicAnd    = 20
+precedence LogicOr     = 18
 
 parse_program :: [Token] -> Maybe Program
 parse_program tokens = do
@@ -109,6 +134,9 @@ parse_factor (TokMinus:tail) = do
 parse_factor (TokTilde:tail) = do
     (expr, rest) <- parse_factor tail
     return (Unary Complement expr, rest)
+parse_factor (TokBang:tail) = do
+    (expr, rest) <- parse_factor tail
+    return (Unary LogicNot expr, rest)
 parse_factor (TokOpenParen:tail) = do
     (expr, rest) <- parse_expression tail
     case rest of
