@@ -8,8 +8,9 @@ import qualified Data.Map
 import Control.Monad.State
 
 import qualified TAC as T
+import qualified Parser as P
 import TAC(VarId(..))
-import Parser(UnaryOperator(..))
+import Parser(UnaryOperator(..), BinaryOperator(..))
 
 data Program
     = Program Function  
@@ -21,10 +22,15 @@ data Function
 
 data Instruction
     = Mov Operand Operand
+    | Add Operand Operand
+    | Sub Operand Operand
+    | Mul Operand Operand
+    | Div Operand
     | Not Operand
     | Neg Operand
     | AllocateStack Int
     | Ret
+    | Cdq
     deriving (Show)
 
 data Operand
@@ -36,7 +42,9 @@ data Operand
 
 data Reg
     = AX
+    | DX
     | R10
+    | R11
     deriving (Show, Eq, Ord)
 
 translateTACtoASM :: T.Program -> Program
@@ -58,6 +66,25 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
         translateInstruction (T.Unary Complement src dst) = [
             Mov (translateValue src) (translateValue dst),
             Not (translateValue dst)]    
+        translateInstruction (T.Binary P.Add left right dst) = [
+            Mov (translateValue left) (translateValue dst),
+            AsmAst.Add (translateValue right) (translateValue dst)]    
+        translateInstruction (T.Binary Subtract left right dst) = [
+            Mov (translateValue left) (translateValue dst),
+            Sub (translateValue right) (translateValue dst)]    
+        translateInstruction (T.Binary Multiply left right dst) = [
+            Mov (translateValue left) (translateValue dst),
+            Mul (translateValue right) (translateValue dst)]    
+        translateInstruction (T.Binary Divide left right dst) = [
+            Mov (translateValue left) (Register AX),
+            Cdq,
+            Div (translateValue right),
+            Mov (Register AX) (translateValue dst)]    
+        translateInstruction (T.Binary Remainder left right dst) = [
+            Mov (translateValue left) (Register AX),
+            Cdq,
+            Div (translateValue right),
+            Mov (Register DX) (translateValue dst)]    
 
         translateValue :: T.Value -> Operand
         translateValue (T.Constant c) = Imm c
@@ -92,12 +119,27 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
             src' <- replacePseudoOp src
             dst' <- replacePseudoOp dst
             return (Mov src' dst')
+        replacePseudoIns (AsmAst.Add src dst) = do
+            src' <- replacePseudoOp src
+            dst' <- replacePseudoOp dst
+            return (AsmAst.Add src' dst')
+        replacePseudoIns (Sub src dst) = do
+            src' <- replacePseudoOp src
+            dst' <- replacePseudoOp dst
+            return (Sub src' dst')
+        replacePseudoIns (Mul src dst) = do
+            src' <- replacePseudoOp src
+            dst' <- replacePseudoOp dst
+            return (Mul src' dst')
         replacePseudoIns (Neg dst) = do
             dst' <- replacePseudoOp dst
             return (Neg dst')
         replacePseudoIns (Not dst) = do
             dst' <- replacePseudoOp dst
             return (Not dst')
+        replacePseudoIns (Div src) = do
+            src' <- replacePseudoOp src
+            return (Div src')
         replacePseudoIns any = return any 
 
         replacePseudoFun :: Function -> TransM Function
@@ -124,6 +166,19 @@ fixInstructions (Program fun) = Program (fixInstructionsFun fun)
         fixInstr (Mov (Stack a) (Stack b)) = [
             Mov (Stack a) (Register R10),
             Mov (Register R10) (Stack b)]
+        fixInstr (AsmAst.Add (Stack a) (Stack b)) = [
+            Mov (Stack a) (Register R10),
+            AsmAst.Add (Register R10) (Stack b)]
+        fixInstr (Sub (Stack a) (Stack b)) = [
+            Mov (Stack a) (Register R10),
+            Sub (Register R10) (Stack b)]
+        fixInstr (Mul src (Stack b)) = [
+            Mov (Stack b) (Register R11),
+            Mul src (Register R11),
+            Mov (Register R11) (Stack b)]
+        fixInstr (Div (Imm n)) = [
+            Mov (Imm n) (Register R10),
+            Div (Register R10)]
         fixInstr ins = [ins]
 
 
@@ -136,15 +191,22 @@ emitProgram (Program fun) = (emitFunction fun) ++ [".section .note.GNU-stack,\"\
 
         emitInstruction :: Instruction -> String
         emitInstruction (Mov src dst) = "    movl " ++ (emitOperand src) ++ ", " ++ (emitOperand dst)
+        emitInstruction (AsmAst.Add src dst) = "    addl " ++ (emitOperand src) ++ ", " ++ (emitOperand dst)
+        emitInstruction (Sub src dst) = "    subl " ++ (emitOperand src) ++ ", " ++ (emitOperand dst)
+        emitInstruction (Mul src dst) = "    imull " ++ (emitOperand src) ++ ", " ++ (emitOperand dst)
+        emitInstruction (Div src) = "    idivl " ++ (emitOperand src)
         emitInstruction (Neg dst) = "    negl " ++ (emitOperand dst)
         emitInstruction (Not dst) = "    notl " ++ (emitOperand dst)
         emitInstruction (AllocateStack n) = "    subq $" ++ (show n) ++", %rsp"
         emitInstruction Ret = "    movq %rbp, %rsp\n    popq %rbp\n    ret"
+        emitInstruction Cdq = "    cdq"
 
         emitOperand :: Operand -> String
         emitOperand (Imm n) = "$" ++ (show n)
         emitOperand (Register AX) = "%eax"
+        emitOperand (Register DX) = "%edx"
         emitOperand (Register R10) = "%r10d"
+        emitOperand (Register R11) = "%r11d"
         emitOperand (Stack n) = (show n)++"(%rbp)"
         emitOperand (Pseudo name) = error $ "emitOperand: unexpected Pseudo operand: " ++ name
 

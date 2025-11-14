@@ -11,7 +11,7 @@ where
 import Control.Monad.State
 
 import qualified Parser as P
-import Parser (UnaryOperator)
+import Parser (UnaryOperator, BinaryOperator)
 
 data Program
     = Program Function  
@@ -24,6 +24,7 @@ data Function
 data Instruction
     = Return Value
     | Unary UnaryOperator Value Value
+    | Binary BinaryOperator Value Value Value
     deriving (Show)
 
 newtype VarId = VarId Int deriving (Show, Eq)
@@ -73,3 +74,9 @@ translate program = evalState (translateProgram program) initState
             varid <- newId
             let destination = Variable varid Nothing
             return (instructions ++ [Unary op value destination], destination)
+        translateExpression (P.Binary op left right) = do
+            (l_instructions, left') <- translateExpression left
+            (r_instructions, right') <- translateExpression right
+            varid <- newId
+            let destination = Variable varid Nothing
+            return (l_instructions ++ r_instructions ++ [Binary op left' right' destination], destination)
