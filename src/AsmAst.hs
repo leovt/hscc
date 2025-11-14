@@ -21,16 +21,29 @@ data Function
     deriving (Show)
 
 data Instruction
-    = Mov Operand Operand
-    | Add Operand Operand
-    | Sub Operand Operand
-    | Mul Operand Operand
-    | Div Operand
-    | Not Operand
-    | Neg Operand
+    = TwoOp TwoOperandInstruction Operand Operand
+    | OneOp OneOperandInstruction Operand
     | AllocateStack Int
     | Ret
     | Cdq
+    deriving (Show)
+
+data OneOperandInstruction
+    = Div
+    | Not
+    | Neg
+    deriving (Show)
+
+data TwoOperandInstruction
+    = Mov
+    | Add
+    | Sub
+    | Mul
+    | And
+    | Or
+    | Xor
+    | ShLeft
+    | ShRight
     deriving (Show)
 
 data Operand
@@ -42,6 +55,8 @@ data Operand
 
 data Reg
     = AX
+    | CX
+    | CL -- Todo remove when types are implemented
     | DX
     | R10
     | R11
@@ -58,33 +73,41 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
 
         translateInstruction :: T.Instruction -> [Instruction]
         translateInstruction (T.Return value) = [
-            Mov (translateValue value) (Register AX),
+            TwoOp Mov (translateValue value) (Register AX),
             Ret]
-        translateInstruction (T.Unary Negate src dst) = [
-            Mov (translateValue src) (translateValue dst),
-            Neg (translateValue dst)]
-        translateInstruction (T.Unary Complement src dst) = [
-            Mov (translateValue src) (translateValue dst),
-            Not (translateValue dst)]    
-        translateInstruction (T.Binary P.Add left right dst) = [
-            Mov (translateValue left) (translateValue dst),
-            AsmAst.Add (translateValue right) (translateValue dst)]    
-        translateInstruction (T.Binary Subtract left right dst) = [
-            Mov (translateValue left) (translateValue dst),
-            Sub (translateValue right) (translateValue dst)]    
-        translateInstruction (T.Binary Multiply left right dst) = [
-            Mov (translateValue left) (translateValue dst),
-            Mul (translateValue right) (translateValue dst)]    
+        translateInstruction (T.Unary op src dst) = [
+            TwoOp Mov (translateValue src) (translateValue dst),
+            OneOp (translateUnary op) (translateValue dst)]
         translateInstruction (T.Binary Divide left right dst) = [
-            Mov (translateValue left) (Register AX),
+            TwoOp Mov (translateValue left) (Register AX),
             Cdq,
-            Div (translateValue right),
-            Mov (Register AX) (translateValue dst)]    
+            OneOp Div (translateValue right),
+            TwoOp Mov (Register AX) (translateValue dst)]    
         translateInstruction (T.Binary Remainder left right dst) = [
-            Mov (translateValue left) (Register AX),
+            TwoOp Mov (translateValue left) (Register AX),
             Cdq,
-            Div (translateValue right),
-            Mov (Register DX) (translateValue dst)]    
+            OneOp Div (translateValue right),
+            TwoOp Mov (Register DX) (translateValue dst)]
+        translateInstruction (T.Binary op left right dst) = [
+            TwoOp Mov (translateValue left) (translateValue dst),
+            TwoOp (translateBinary op) (translateValue right) (translateValue dst)]    
+
+        translateUnary :: UnaryOperator -> OneOperandInstruction
+        translateUnary Complement = Not
+        translateUnary Negate = Neg    
+
+        translateBinary :: BinaryOperator -> TwoOperandInstruction
+        translateBinary P.Add = AsmAst.Add
+        translateBinary Subtract = Sub
+        translateBinary Multiply = Mul
+        translateBinary Divide = error $ "Divide does not translate to a two operand form."
+        translateBinary Remainder = error $ "Divide does not translate to a two operand form."
+        translateBinary BitAnd = And
+        translateBinary BitOr = Or
+        translateBinary BitXor = Xor
+        translateBinary ShiftLeft = ShLeft
+        translateBinary ShiftRight = ShRight
+        
 
         translateValue :: T.Value -> Operand
         translateValue (T.Constant c) = Imm c
@@ -115,31 +138,13 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
         replacePseudoOp op = return op
 
         replacePseudoIns :: Instruction -> TransM Instruction
-        replacePseudoIns (Mov src dst) = do
+        replacePseudoIns (TwoOp op src dst) = do
             src' <- replacePseudoOp src
             dst' <- replacePseudoOp dst
-            return (Mov src' dst')
-        replacePseudoIns (AsmAst.Add src dst) = do
-            src' <- replacePseudoOp src
+            return (TwoOp op  src' dst')
+        replacePseudoIns (OneOp op dst) = do
             dst' <- replacePseudoOp dst
-            return (AsmAst.Add src' dst')
-        replacePseudoIns (Sub src dst) = do
-            src' <- replacePseudoOp src
-            dst' <- replacePseudoOp dst
-            return (Sub src' dst')
-        replacePseudoIns (Mul src dst) = do
-            src' <- replacePseudoOp src
-            dst' <- replacePseudoOp dst
-            return (Mul src' dst')
-        replacePseudoIns (Neg dst) = do
-            dst' <- replacePseudoOp dst
-            return (Neg dst')
-        replacePseudoIns (Not dst) = do
-            dst' <- replacePseudoOp dst
-            return (Not dst')
-        replacePseudoIns (Div src) = do
-            src' <- replacePseudoOp src
-            return (Div src')
+            return (OneOp op dst')
         replacePseudoIns any = return any 
 
         replacePseudoFun :: Function -> TransM Function
@@ -163,22 +168,24 @@ fixInstructions (Program fun) = Program (fixInstructionsFun fun)
         fixInstructionsFun (Function name instructions) = Function name (concatMap fixInstr instructions)
 
         fixInstr :: Instruction -> [Instruction]
-        fixInstr (Mov (Stack a) (Stack b)) = [
-            Mov (Stack a) (Register R10),
-            Mov (Register R10) (Stack b)]
-        fixInstr (AsmAst.Add (Stack a) (Stack b)) = [
-            Mov (Stack a) (Register R10),
-            AsmAst.Add (Register R10) (Stack b)]
-        fixInstr (Sub (Stack a) (Stack b)) = [
-            Mov (Stack a) (Register R10),
-            Sub (Register R10) (Stack b)]
-        fixInstr (Mul src (Stack b)) = [
-            Mov (Stack b) (Register R11),
-            Mul src (Register R11),
-            Mov (Register R11) (Stack b)]
-        fixInstr (Div (Imm n)) = [
-            Mov (Imm n) (Register R10),
-            Div (Register R10)]
+        fixInstr (TwoOp Mul src (Stack b)) = [
+            TwoOp Mov (Stack b) (Register R11),
+            TwoOp Mul src (Register R11),
+            TwoOp Mov (Register R11) (Stack b)]
+        fixInstr (TwoOp ShLeft (Imm n) dst) = [(TwoOp ShLeft (Imm n) dst)]
+        fixInstr (TwoOp ShLeft src dst) = [
+            TwoOp Mov src (Register CX),
+            TwoOp ShLeft (Register CL) (dst)]
+        fixInstr (TwoOp ShRight (Imm n) dst) = [(TwoOp ShRight (Imm n) dst)]
+        fixInstr (TwoOp ShRight src dst) = [
+            TwoOp Mov src (Register CX),
+            TwoOp ShRight (Register CL) (dst)]
+        fixInstr (TwoOp op (Stack a) (Stack b)) = [
+            TwoOp Mov (Stack a) (Register R10),
+            TwoOp op (Register R10) (Stack b)]
+        fixInstr (OneOp Div (Imm n)) = [
+            TwoOp Mov (Imm n) (Register R10),
+            OneOp Div (Register R10)]
         fixInstr ins = [ins]
 
 
@@ -190,20 +197,33 @@ emitProgram (Program fun) = (emitFunction fun) ++ [".section .note.GNU-stack,\"\
         emitFunction (Function name instructions) = [".globl " ++ name, name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ (map emitInstruction instructions)
 
         emitInstruction :: Instruction -> String
-        emitInstruction (Mov src dst) = "    movl " ++ (emitOperand src) ++ ", " ++ (emitOperand dst)
-        emitInstruction (AsmAst.Add src dst) = "    addl " ++ (emitOperand src) ++ ", " ++ (emitOperand dst)
-        emitInstruction (Sub src dst) = "    subl " ++ (emitOperand src) ++ ", " ++ (emitOperand dst)
-        emitInstruction (Mul src dst) = "    imull " ++ (emitOperand src) ++ ", " ++ (emitOperand dst)
-        emitInstruction (Div src) = "    idivl " ++ (emitOperand src)
-        emitInstruction (Neg dst) = "    negl " ++ (emitOperand dst)
-        emitInstruction (Not dst) = "    notl " ++ (emitOperand dst)
+        emitInstruction (TwoOp op src dst) = "    " ++ (twoOp op) ++ " " ++ (emitOperand src) ++ ", " ++ (emitOperand dst)
+        emitInstruction (OneOp op src)     = "    " ++ (oneOp op) ++ " " ++ (emitOperand src)
         emitInstruction (AllocateStack n) = "    subq $" ++ (show n) ++", %rsp"
         emitInstruction Ret = "    movq %rbp, %rsp\n    popq %rbp\n    ret"
         emitInstruction Cdq = "    cdq"
 
+        twoOp :: TwoOperandInstruction -> String
+        twoOp Mov = "movl"
+        twoOp AsmAst.Add = "addl"
+        twoOp Sub = "subl"
+        twoOp Mul = "imull"
+        twoOp And = "andl"
+        twoOp Or  = "orl"
+        twoOp Xor = "xorl"
+        twoOp ShLeft = "sall"
+        twoOp ShRight = "sarl"
+
+        oneOp :: OneOperandInstruction -> String
+        oneOp Div = "idivl"
+        oneOp Neg = "negl"
+        oneOp Not = "notl"
+
         emitOperand :: Operand -> String
         emitOperand (Imm n) = "$" ++ (show n)
         emitOperand (Register AX) = "%eax"
+        emitOperand (Register CX) = "%ecx"
+        emitOperand (Register CL) = "%cl"
         emitOperand (Register DX) = "%edx"
         emitOperand (Register R10) = "%r10d"
         emitOperand (Register R11) = "%r11d"

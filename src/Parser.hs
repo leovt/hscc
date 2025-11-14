@@ -46,15 +46,25 @@ data BinaryOperator
     | Multiply
     | Divide
     | Remainder
+    | BitAnd
+    | BitOr
+    | BitXor
+    | ShiftLeft
+    | ShiftRight
     deriving (Show)
 
 binop :: Token -> Maybe BinaryOperator
-binop TokAsterisk = Just Multiply
-binop TokSlash    = Just Divide
-binop TokPercent  = Just Remainder
-binop TokPlus     = Just Add
-binop TokMinus    = Just Subtract
-binop _           = Nothing
+binop TokAsterisk   = Just Multiply
+binop TokSlash      = Just Divide
+binop TokPercent    = Just Remainder
+binop TokPlus       = Just Add
+binop TokMinus      = Just Subtract
+binop TokAmpersand  = Just BitAnd
+binop TokPipe       = Just BitOr
+binop TokCircumflex = Just BitXor
+binop TokDblLess    = Just ShiftLeft
+binop TokDblGreater = Just ShiftRight
+binop _             = Nothing
 
 precedence :: BinaryOperator -> Int
 precedence Multiply    = 50
@@ -62,6 +72,11 @@ precedence Divide      = 50
 precedence Remainder   = 50
 precedence Add         = 45
 precedence Subtract    = 45
+precedence ShiftLeft   = 40
+precedence ShiftRight  = 40
+precedence BitAnd      = 25
+precedence BitXor      = 24
+precedence BitOr       = 23
 
 parse_program :: [Token] -> Maybe Program
 parse_program tokens = do
