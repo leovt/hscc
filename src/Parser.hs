@@ -163,3 +163,4 @@ parse_expression = parse_expression_prec 0
                             (right, rest') <- parse_expression_prec (1 + prec) rest
                             parse_rhs min_prec (Binary operator left right) rest'
                 Nothing -> Just (left, (token:rest))
+        parse_rhs _ left [] = Just (left, [])

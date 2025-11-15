@@ -35,6 +35,7 @@ optionsParser = Options
         ( long "codegen"
        <> help "Stop after codegen" )
 
+getOptions :: IO Options
 getOptions = execParser opts
   where
     opts = info (optionsParser <**> helper)

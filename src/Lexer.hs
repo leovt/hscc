@@ -96,7 +96,9 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
             | otherwise            = step (LS_Start, Right ((map_keyword ident, Span start pos):tokens)) (c, pos)
         step (LS_Punctuation start punct, Right tokens) (c, pos) = case punctuationToken (punct ++ [c]) of
                 Just _  -> (LS_Punctuation start (punct++[c]), Right tokens)
-                Nothing -> let Just token = punctuationToken punct in step (LS_Start, Right ((token , Span start pos):tokens)) (c, pos)
+                Nothing -> case punctuationToken punct of
+                    Just token -> step (LS_Start, Right ((token , Span start pos):tokens)) (c, pos)
+                    Nothing -> error $ "punctuationToken: unexpected Nothing for punct: " ++ show punct
         
             
         map_keyword "int" = TokKeyInt

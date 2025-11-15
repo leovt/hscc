@@ -129,13 +129,12 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
         translateUnary :: UnaryOperator -> OneOperandInstruction
         translateUnary Complement = Not
         translateUnary Negate = Neg    
+        translateUnary LogicNot = error $ "LogicNot does not translate to a one operand form."
 
         translateBinary :: BinaryOperator -> Binop
         translateBinary P.Add = Arithmetic AsmAst.Add
         translateBinary Subtract = Arithmetic Sub
         translateBinary Multiply = Arithmetic Mul
-        translateBinary Divide = error $ "Divide does not translate to a two operand form."
-        translateBinary Remainder = error $ "Divide does not translate to a two operand form."
         translateBinary BitAnd = Arithmetic And
         translateBinary BitOr = Arithmetic Or
         translateBinary BitXor = Arithmetic Xor
@@ -147,6 +146,10 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
         translateBinary Greater = Relational G
         translateBinary LessOrEqual = Relational LE
         translateBinary GreaterOrEqual = Relational GE
+        translateBinary Divide = error $ "Divide does not translate to a two operand form."
+        translateBinary Remainder = error $ "Remainder does not translate to a two operand form."
+        translateBinary LogicAnd = error $ "LogicAnd does not translate to a two operand form."
+        translateBinary LogicOr = error $ "LogicOr does not translate to a two operand form."
 
         translateValue :: T.Value -> Operand
         translateValue (T.Constant c) = Imm c

@@ -3,12 +3,11 @@ module Main where
 import System.Environment (getArgs, getProgName)
 import System.FilePath (replaceExtension)
 import System.Exit (die, exitSuccess)
-import System.IO (appendFile)
 import System.Process (readProcess, callProcess)
 import Control.Monad (when)
 
 import Lexer (lexer)
-import Parser (parser, Program)
+import Parser (parser)
 import AsmAst (translateTACtoASM, emitProgram)
 import CLI(getOptions, Options(..))
 import TAC
