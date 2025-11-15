@@ -25,6 +25,11 @@ data Instruction
     = Return Value
     | Unary UnaryOperator Value Value
     | Binary BinaryOperator Value Value Value
+    | Copy Value Value
+    | Jump VarId
+    | JumpIfZero VarId Value
+    | JumpIfNotZero VarId Value
+    | Label VarId
     deriving (Show)
 
 newtype VarId = VarId Int deriving (Show, Eq)
@@ -69,11 +74,51 @@ translate program = evalState (translateProgram program) initState
         translateExpression :: P.Expression -> TransM ([Instruction], Value)
         translateExpression (P.Constant c) = do
             return ([], Constant c)
+
         translateExpression (P.Unary op expression) = do
             (instructions, value) <- translateExpression expression
             varid <- newId
             let destination = Variable varid Nothing
             return (instructions ++ [Unary op value destination], destination)
+
+        translateExpression (P.Binary P.LogicAnd left right) = do
+            (l_instructions, left') <- translateExpression left
+            (r_instructions, right') <- translateExpression right
+            varid <- newId
+            false_label <- newId
+            end_label <- newId
+            let destination = Variable varid Nothing
+            let instructions = 
+                    l_instructions ++
+                    [ JumpIfZero false_label left' ] ++
+                    r_instructions ++
+                    [ JumpIfZero false_label right'
+                    , Copy (Constant 1) destination
+                    , Jump end_label
+                    , Label false_label
+                    , Copy (Constant 0) destination
+                    , Label end_label ]
+            return (instructions, destination)
+            
+        translateExpression (P.Binary P.LogicOr left right) = do
+            (l_instructions, left') <- translateExpression left
+            (r_instructions, right') <- translateExpression right
+            varid <- newId
+            true_label <- newId
+            end_label <- newId
+            let destination = Variable varid Nothing
+            let instructions = 
+                    l_instructions ++
+                    [JumpIfNotZero true_label left'] ++
+                    r_instructions ++
+                    [JumpIfNotZero true_label right', 
+                    Copy (Constant 0) destination,
+                    Jump end_label,
+                    Label true_label,
+                    Copy (Constant 1) destination,
+                    Label end_label]
+            return (instructions, destination)
+
         translateExpression (P.Binary op left right) = do
             (l_instructions, left') <- translateExpression left
             (r_instructions, right') <- translateExpression right

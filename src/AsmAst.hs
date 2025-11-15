@@ -24,6 +24,10 @@ data Instruction
     = TwoOp TwoOperandInstruction Operand Operand
     | OneOp OneOperandInstruction Operand
     | AllocateStack Int
+    | Jmp String
+    | JmpCC Condition String
+    | SetCC Condition Operand
+    | Label String
     | Ret
     | Cdq
     deriving (Show)
@@ -38,6 +42,7 @@ data TwoOperandInstruction
     = Mov
     | Add
     | Sub
+    | Cmp
     | Mul
     | And
     | Or
@@ -46,12 +51,19 @@ data TwoOperandInstruction
     | ShRight
     deriving (Show)
 
+data Condition = E | NE | G | GE | L | LE
+    deriving (Show)
+
 data Operand
     = Imm Int
     | Register Reg
     | Pseudo String
     | Stack Int
     deriving (Show, Eq, Ord)
+
+data Binop
+    = Arithmetic TwoOperandInstruction
+    | Relational Condition
 
 data Reg
     = AX
@@ -75,6 +87,10 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
         translateInstruction (T.Return value) = [
             TwoOp Mov (translateValue value) (Register AX),
             Ret]
+        translateInstruction (T.Unary LogicNot src dst) = [
+            TwoOp Cmp (Imm 0) (translateValue src),
+            TwoOp Mov (Imm 0) (translateValue dst),
+            SetCC E (translateValue dst)]
         translateInstruction (T.Unary op src dst) = [
             TwoOp Mov (translateValue src) (translateValue dst),
             OneOp (translateUnary op) (translateValue dst)]
@@ -88,26 +104,49 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
             Cdq,
             OneOp Div (translateValue right),
             TwoOp Mov (Register DX) (translateValue dst)]
-        translateInstruction (T.Binary op left right dst) = [
-            TwoOp Mov (translateValue left) (translateValue dst),
-            TwoOp (translateBinary op) (translateValue right) (translateValue dst)]    
-
+        translateInstruction (T.Binary op left right dst) = 
+            case (translateBinary op) of 
+                Arithmetic instruction -> [
+                    TwoOp Mov (translateValue left) (translateValue dst),
+                    TwoOp instruction (translateValue right) (translateValue dst)]    
+                Relational condition -> let dest = (translateValue dst) in [
+                    TwoOp Cmp (translateValue right) (translateValue left),
+                    TwoOp Mov (Imm 0) dest,
+                    SetCC condition dest]
+        translateInstruction (T.Copy src dst) = [
+            TwoOp Mov (translateValue src) (translateValue dst)]
+        translateInstruction (T.Jump (VarId n)) = [
+            Jmp $ "tmp." ++ (show n)]
+        translateInstruction (T.Label (VarId n)) = [
+            Label $ "tmp." ++ (show n)]
+        translateInstruction (T.JumpIfZero (VarId n) value) = [
+            TwoOp Cmp (Imm 0) (translateValue value),
+            JmpCC E $ "tmp." ++ (show n)]
+        translateInstruction (T.JumpIfNotZero (VarId n) value) = [
+            TwoOp Cmp (Imm 0) (translateValue value),
+            JmpCC NE $ "tmp." ++ (show n)]
+        
         translateUnary :: UnaryOperator -> OneOperandInstruction
         translateUnary Complement = Not
         translateUnary Negate = Neg    
 
-        translateBinary :: BinaryOperator -> TwoOperandInstruction
-        translateBinary P.Add = AsmAst.Add
-        translateBinary Subtract = Sub
-        translateBinary Multiply = Mul
+        translateBinary :: BinaryOperator -> Binop
+        translateBinary P.Add = Arithmetic AsmAst.Add
+        translateBinary Subtract = Arithmetic Sub
+        translateBinary Multiply = Arithmetic Mul
         translateBinary Divide = error $ "Divide does not translate to a two operand form."
         translateBinary Remainder = error $ "Divide does not translate to a two operand form."
-        translateBinary BitAnd = And
-        translateBinary BitOr = Or
-        translateBinary BitXor = Xor
-        translateBinary ShiftLeft = ShLeft
-        translateBinary ShiftRight = ShRight
-        
+        translateBinary BitAnd = Arithmetic And
+        translateBinary BitOr = Arithmetic Or
+        translateBinary BitXor = Arithmetic Xor
+        translateBinary ShiftLeft = Arithmetic ShLeft
+        translateBinary ShiftRight = Arithmetic ShRight
+        translateBinary Equal = Relational E
+        translateBinary NotEqual = Relational NE
+        translateBinary Less = Relational L
+        translateBinary Greater = Relational G
+        translateBinary LessOrEqual = Relational LE
+        translateBinary GreaterOrEqual = Relational GE
 
         translateValue :: T.Value -> Operand
         translateValue (T.Constant c) = Imm c
@@ -145,6 +184,9 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
         replacePseudoIns (OneOp op dst) = do
             dst' <- replacePseudoOp dst
             return (OneOp op dst')
+        replacePseudoIns (SetCC condition dst) = do
+            dst' <- replacePseudoOp dst
+            return (SetCC condition dst')
         replacePseudoIns any = return any 
 
         replacePseudoFun :: Function -> TransM Function
@@ -180,6 +222,9 @@ fixInstructions (Program fun) = Program (fixInstructionsFun fun)
         fixInstr (TwoOp ShRight src dst) = [
             TwoOp Mov src (Register CX),
             TwoOp ShRight (Register CL) (dst)]
+        fixInstr (TwoOp Cmp src (Imm n)) = [
+            TwoOp Mov (Imm n) (Register R11),
+            TwoOp Cmp src (Register R11)]
         fixInstr (TwoOp op (Stack a) (Stack b)) = [
             TwoOp Mov (Stack a) (Register R10),
             TwoOp op (Register R10) (Stack b)]
@@ -202,6 +247,10 @@ emitProgram (Program fun) = (emitFunction fun) ++ [".section .note.GNU-stack,\"\
         emitInstruction (AllocateStack n) = "    subq $" ++ (show n) ++", %rsp"
         emitInstruction Ret = "    movq %rbp, %rsp\n    popq %rbp\n    ret"
         emitInstruction Cdq = "    cdq"
+        emitInstruction (Jmp label) = "    jmp " ++ label
+        emitInstruction (Label label) = label ++ ":"
+        emitInstruction (JmpCC condition label) = "    j" ++ (cond condition) ++ " " ++ label
+        emitInstruction (SetCC condition dst) = "    set" ++ (cond condition) ++ " " ++ (emitOperand dst)
 
         twoOp :: TwoOperandInstruction -> String
         twoOp Mov = "movl"
@@ -213,11 +262,20 @@ emitProgram (Program fun) = (emitFunction fun) ++ [".section .note.GNU-stack,\"\
         twoOp Xor = "xorl"
         twoOp ShLeft = "sall"
         twoOp ShRight = "sarl"
+        twoOp Cmp = "cmpl"
 
         oneOp :: OneOperandInstruction -> String
         oneOp Div = "idivl"
         oneOp Neg = "negl"
         oneOp Not = "notl"
+
+        cond :: Condition -> String
+        cond E = "e"
+        cond NE = "ne"
+        cond G = "g"
+        cond GE = "ge"
+        cond L = "l"
+        cond LE = "le"
 
         emitOperand :: Operand -> String
         emitOperand (Imm n) = "$" ++ (show n)
