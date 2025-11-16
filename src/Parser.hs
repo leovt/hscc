@@ -22,15 +22,27 @@ data Program
     deriving (Show)
 
 data Function
-    = Function String [Statement]
+    = Function String [BlockItem]
+    deriving (Show)
+
+data BlockItem
+    = Stmt Statement
+    | Decl Declaration
+    deriving (Show)
+
+data Declaration 
+    = VariableDeclaration String (Maybe Expression)
     deriving (Show)
 
 data Statement
     = ReturnStatement Expression
+    | ExpressionStatement Expression
+    | NullStatement
     deriving (Show)
 
 data Expression
     = Constant Int
+    | Variable String
     | Unary UnaryOperator Expression
     | Binary BinaryOperator Expression Expression
     deriving (Show)
@@ -60,6 +72,7 @@ data BinaryOperator
     | Greater
     | LessOrEqual
     | GreaterOrEqual
+    | Assignment
     deriving (Show)
 
 binop :: Token -> Maybe BinaryOperator
@@ -81,6 +94,7 @@ binop TokLess       = Just Less
 binop TokGreater    = Just Greater
 binop TokLessEqual  = Just LessOrEqual
 binop TokGreaterEqual = Just GreaterOrEqual
+binop TokEqual      = Just Assignment
 binop _             = Nothing
 
 precedence :: BinaryOperator -> Int
@@ -102,6 +116,7 @@ precedence BitXor      = 24
 precedence BitOr       = 23
 precedence LogicAnd    = 20
 precedence LogicOr     = 18
+precedence Assignment  = 1
 
 parse_program :: [Token] -> Maybe Program
 parse_program tokens = do
@@ -112,11 +127,23 @@ parse_program tokens = do
 
 parse_function :: [Token] -> Maybe (Function, [Token])
 parse_function (TokKeyInt:TokIdent name:TokOpenParen:TokKeyVoid:TokCloseParen:TokOpenBrace:tail) = do
-    (stmt, rest) <- parse_statement tail
+    (items, rest) <- parse_blockitems tail
     case rest of 
-        TokCloseBrace:rest' -> return (Function name [stmt], rest')
+        TokCloseBrace:rest' -> return (Function name items, rest')
         _ -> Nothing
 parse_function _ = Nothing
+
+parse_blockitems :: [Token] -> Maybe ([BlockItem], [Token])
+parse_blockitems tokens = Just (parse_blockitems_seq ([], tokens))
+    where
+        parse_blockitems_seq :: ([BlockItem], [Token]) -> ([BlockItem], [Token])
+        parse_blockitems_seq (items, TokCloseBrace:tokens) = (items, TokCloseBrace:tokens)
+        parse_blockitems_seq (items, tokens) = 
+            case (parse_statement tokens) of
+                Just (stmt, rest) -> parse_blockitems_seq (items ++ [Stmt stmt], rest)
+                Nothing -> case (parse_declaration tokens) of
+                    Just (decl, rest) -> parse_blockitems_seq (items ++ [Decl decl], rest)
+                    Nothing -> error $ "expected block item " ++ (show tokens) ++ "\n" ++ (show (parse_statement tokens))
 
 parse_statement :: [Token] -> Maybe (Statement, [Token])
 parse_statement (TokKeyReturn:tail) = do
@@ -124,10 +151,29 @@ parse_statement (TokKeyReturn:tail) = do
     case rest of
         TokSemicolon:rest' -> return (ReturnStatement expr, rest')
         _ -> Nothing
-parse_statement _ = Nothing
+parse_statement (TokSemicolon:tail) = do 
+    return (NullStatement, tail)
+parse_statement tokens = do 
+    (expr, rest) <- parse_expression tokens
+    case rest of
+        TokSemicolon:rest' -> return (ReturnStatement expr, rest')
+        _ -> Nothing
+
+parse_declaration :: [Token] -> Maybe (Declaration, [Token])
+parse_declaration (TokKeyInt:(TokIdent name):tokens) = case tokens of
+    (TokEqual:rest) -> do
+        (expr, rest') <- parse_expression rest
+        case rest' of
+            TokSemicolon:rest'' -> return (VariableDeclaration name (Just expr), rest'')
+            _ -> Nothing
+    (TokSemicolon:rest) -> Just (VariableDeclaration name Nothing, rest)
+    _ -> Nothing
+parse_declaration _ = Nothing
+    
 
 parse_factor :: [Token] -> Maybe (Expression, [Token])
 parse_factor ((TokInt n):tail) = return (Constant n, tail)
+parse_factor ((TokIdent n):tail) = return (Variable n, tail)
 parse_factor (TokMinus:tail) = do
     (expr, rest) <- parse_factor tail
     return (Unary Negate expr, rest)
