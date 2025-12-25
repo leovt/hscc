@@ -88,7 +88,7 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
             | c == ';'             = (LS_Start, Right ((TokSemicolon,  Span pos pos):tokens)) 
             | otherwise            = (LS_Start, Left ("Unexpected " ++ [c]))
         step (LS_Integer start n, Right tokens) (c, pos)
-            | c `elem` digits      = (LS_Integer start (10*n+(read [c])), Right tokens)
+            | c `elem` digits      = (LS_Integer start (10*n + read [c]), Right tokens)
             | c `elem` id_continue = (LS_Integer start n, Left ("Unexpected in Integer " ++ [c]))
             | otherwise            = step (LS_Start, Right ((TokInt n, Span start pos):tokens)) (c, pos)
         step (LS_Ident start ident, Right tokens) (c, pos)

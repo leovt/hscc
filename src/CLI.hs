@@ -7,6 +7,7 @@ data Options = Options
     , outputFile  :: Maybe FilePath
     , lexOnly     :: Bool
     , parseOnly   :: Bool
+    , validateOnly:: Bool
     , tackyOnly   :: Bool
     , codegenOnly   :: Bool
     }
@@ -28,6 +29,9 @@ optionsParser = Options
     <*> switch
         ( long "parse"
        <> help "Stop after parser" )
+    <*> switch
+        ( long "validate"
+       <> help "Stop after validation" )
     <*> switch
         ( long "tacky"
        <> help "Stop after TAC generation" )

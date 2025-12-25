@@ -2,7 +2,9 @@ module Parser
     ( parser
     , Program(..)
     , Function(..)
+    , BlockItem(..)
     , Statement(..)
+    , Declaration(..)
     , Expression(..)
     , UnaryOperator(..)
     , BinaryOperator(..)
@@ -118,6 +120,11 @@ precedence LogicAnd    = 20
 precedence LogicOr     = 18
 precedence Assignment  = 1
 
+associativity :: BinaryOperator -> Int
+associativity op = case op of
+    Assignment -> 0 -- right_associative
+    _other -> 1 -- left_associative
+
 parse_program :: [Token] -> Maybe Program
 parse_program tokens = do
     (fun, rest) <- parse_function tokens
@@ -139,11 +146,11 @@ parse_blockitems tokens = Just (parse_blockitems_seq ([], tokens))
         parse_blockitems_seq :: ([BlockItem], [Token]) -> ([BlockItem], [Token])
         parse_blockitems_seq (items, TokCloseBrace:tokens) = (items, TokCloseBrace:tokens)
         parse_blockitems_seq (items, tokens) = 
-            case (parse_statement tokens) of
+            case parse_statement tokens of
                 Just (stmt, rest) -> parse_blockitems_seq (items ++ [Stmt stmt], rest)
-                Nothing -> case (parse_declaration tokens) of
+                Nothing -> case parse_declaration tokens of
                     Just (decl, rest) -> parse_blockitems_seq (items ++ [Decl decl], rest)
-                    Nothing -> error $ "expected block item " ++ (show tokens) ++ "\n" ++ (show (parse_statement tokens))
+                    Nothing -> error $ "expected block item " ++ show tokens ++ "\n" ++ show (parse_statement tokens)
 
 parse_statement :: [Token] -> Maybe (Statement, [Token])
 parse_statement (TokKeyReturn:tail) = do
@@ -156,7 +163,7 @@ parse_statement (TokSemicolon:tail) = do
 parse_statement tokens = do 
     (expr, rest) <- parse_expression tokens
     case rest of
-        TokSemicolon:rest' -> return (ReturnStatement expr, rest')
+        TokSemicolon:rest' -> return (ExpressionStatement expr, rest')
         _ -> Nothing
 
 parse_declaration :: [Token] -> Maybe (Declaration, [Token])
@@ -203,10 +210,11 @@ parse_expression = parse_expression_prec 0
             case binop token of
                 Just operator -> 
                     let prec = precedence operator
+                        assoc = associativity operator
                     in if prec < min_prec 
-                        then Just (left, (token:rest))
+                        then Just (left, token:rest)
                         else do
-                            (right, rest') <- parse_expression_prec (1 + prec) rest
+                            (right, rest') <- parse_expression_prec (assoc + prec) rest
                             parse_rhs min_prec (Binary operator left right) rest'
-                Nothing -> Just (left, (token:rest))
+                Nothing -> Just (left, token:rest)
         parse_rhs _ left [] = Just (left, [])

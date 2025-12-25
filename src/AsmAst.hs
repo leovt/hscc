@@ -9,7 +9,6 @@ import Control.Monad.State
 
 import qualified TAC as T
 import qualified Parser as P
-import TAC(VarId(..))
 import Parser(UnaryOperator(..), BinaryOperator(..))
 
 data Program
@@ -105,31 +104,29 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
             OneOp Div (translateValue right),
             TwoOp Mov (Register DX) (translateValue dst)]
         translateInstruction (T.Binary op left right dst) = 
-            case (translateBinary op) of 
+            case translateBinary op of 
                 Arithmetic instruction -> [
                     TwoOp Mov (translateValue left) (translateValue dst),
                     TwoOp instruction (translateValue right) (translateValue dst)]    
-                Relational condition -> let dest = (translateValue dst) in [
+                Relational condition -> let dest = translateValue dst in [
                     TwoOp Cmp (translateValue right) (translateValue left),
                     TwoOp Mov (Imm 0) dest,
                     SetCC condition dest]
         translateInstruction (T.Copy src dst) = [
             TwoOp Mov (translateValue src) (translateValue dst)]
-        translateInstruction (T.Jump (VarId n)) = [
-            Jmp $ "tmp." ++ (show n)]
-        translateInstruction (T.Label (VarId n)) = [
-            Label $ "tmp." ++ (show n)]
-        translateInstruction (T.JumpIfZero (VarId n) value) = [
+        translateInstruction (T.Jump label) = [Jmp label]
+        translateInstruction (T.Label label) = [Label label]
+        translateInstruction (T.JumpIfZero label value) = [
             TwoOp Cmp (Imm 0) (translateValue value),
-            JmpCC E $ "tmp." ++ (show n)]
-        translateInstruction (T.JumpIfNotZero (VarId n) value) = [
+            JmpCC E label]
+        translateInstruction (T.JumpIfNotZero label value) = [
             TwoOp Cmp (Imm 0) (translateValue value),
-            JmpCC NE $ "tmp." ++ (show n)]
+            JmpCC NE label]
         
         translateUnary :: UnaryOperator -> OneOperandInstruction
         translateUnary Complement = Not
         translateUnary Negate = Neg    
-        translateUnary LogicNot = error $ "LogicNot does not translate to a one operand form."
+        translateUnary LogicNot = error "LogicNot does not translate to a one operand form."
 
         translateBinary :: BinaryOperator -> Binop
         translateBinary P.Add = Arithmetic AsmAst.Add
@@ -146,15 +143,15 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
         translateBinary Greater = Relational G
         translateBinary LessOrEqual = Relational LE
         translateBinary GreaterOrEqual = Relational GE
-        translateBinary Divide = error $ "Divide does not translate to a two operand form."
-        translateBinary Remainder = error $ "Remainder does not translate to a two operand form."
-        translateBinary LogicAnd = error $ "LogicAnd does not translate to a two operand form."
-        translateBinary LogicOr = error $ "LogicOr does not translate to a two operand form."
+        translateBinary Divide = error "Divide does not translate to a two operand form."
+        translateBinary Remainder = error "Remainder does not translate to a two operand form."
+        translateBinary LogicAnd = error "LogicAnd does not translate to a two operand form."
+        translateBinary LogicOr = error "LogicOr does not translate to a two operand form."
+        translateBinary Assignment = error "LogicOr does not translate to a two operand form."
 
         translateValue :: T.Value -> Operand
         translateValue (T.Constant c) = Imm c
-        translateValue (T.Variable (VarId n) Nothing) = Pseudo $ "tmp." ++ (show n)
-        translateValue (T.Variable (VarId n) (Just hint)) = Pseudo $ hint ++ "." ++ (show n)
+        translateValue (T.Variable name) = Pseudo name
 
 
 data TransState = TransState { 
@@ -173,7 +170,7 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
                 Just existing -> return existing
                 Nothing -> do
                     -- Compute a new Stack operand, e.g., Stack n where n = current map size
-                    let n = (stackSize state) + 4
+                    let n = stackSize state + 4
                     let new = Stack (-n)
                     put TransState {stackSize=n, pseudoMap = Data.Map.insert (Pseudo name) new (pseudoMap state)}
                     return new
@@ -197,7 +194,7 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
             put (TransState {stackSize=0, pseudoMap=Data.Map.empty}) -- start with an empty mapping
             instructions' <- mapM replacePseudoIns instructions
             state <- get
-            return (Function name ([AllocateStack (stackSize state)] ++ instructions'))
+            return (Function name (AllocateStack (stackSize state) : instructions'))
 
         replacePseudoProg :: Program -> TransM Program
         replacePseudoProg (Program fun) = do 
@@ -217,14 +214,14 @@ fixInstructions (Program fun) = Program (fixInstructionsFun fun)
             TwoOp Mov (Stack b) (Register R11),
             TwoOp Mul src (Register R11),
             TwoOp Mov (Register R11) (Stack b)]
-        fixInstr (TwoOp ShLeft (Imm n) dst) = [(TwoOp ShLeft (Imm n) dst)]
+        fixInstr (TwoOp ShLeft (Imm n) dst) = [TwoOp ShLeft (Imm n) dst]
         fixInstr (TwoOp ShLeft src dst) = [
             TwoOp Mov src (Register CX),
-            TwoOp ShLeft (Register CL) (dst)]
-        fixInstr (TwoOp ShRight (Imm n) dst) = [(TwoOp ShRight (Imm n) dst)]
+            TwoOp ShLeft (Register CL) dst]
+        fixInstr (TwoOp ShRight (Imm n) dst) = [TwoOp ShRight (Imm n) dst]
         fixInstr (TwoOp ShRight src dst) = [
             TwoOp Mov src (Register CX),
-            TwoOp ShRight (Register CL) (dst)]
+            TwoOp ShRight (Register CL) dst]
         fixInstr (TwoOp Cmp src (Imm n)) = [
             TwoOp Mov (Imm n) (Register R11),
             TwoOp Cmp src (Register R11)]
@@ -239,21 +236,21 @@ fixInstructions (Program fun) = Program (fixInstructionsFun fun)
 
 
 emitProgram :: Program -> [String]
-emitProgram (Program fun) = (emitFunction fun) ++ [".section .note.GNU-stack,\"\",@progbits"]
+emitProgram (Program fun) = emitFunction fun ++ [".section .note.GNU-stack,\"\",@progbits"]
     where
         emitFunction :: Function -> [String]
-        emitFunction (Function name instructions) = [".globl " ++ name, name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ (map emitInstruction instructions)
+        emitFunction (Function name instructions) = [".globl " ++ name, name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ map emitInstruction instructions
 
         emitInstruction :: Instruction -> String
-        emitInstruction (TwoOp op src dst) = "    " ++ (twoOp op) ++ " " ++ (emitOperand src) ++ ", " ++ (emitOperand dst)
-        emitInstruction (OneOp op src)     = "    " ++ (oneOp op) ++ " " ++ (emitOperand src)
-        emitInstruction (AllocateStack n) = "    subq $" ++ (show n) ++", %rsp"
+        emitInstruction (TwoOp op src dst) = "    " ++ twoOp op ++ " " ++ emitOperand src ++ ", " ++ emitOperand dst
+        emitInstruction (OneOp op src)     = "    " ++ oneOp op ++ " " ++ emitOperand src
+        emitInstruction (AllocateStack n) = "    subq $" ++ show n ++", %rsp"
         emitInstruction Ret = "    movq %rbp, %rsp\n    popq %rbp\n    ret"
         emitInstruction Cdq = "    cdq"
         emitInstruction (Jmp label) = "    jmp " ++ label
         emitInstruction (Label label) = label ++ ":"
-        emitInstruction (JmpCC condition label) = "    j" ++ (cond condition) ++ " " ++ label
-        emitInstruction (SetCC condition dst) = "    set" ++ (cond condition) ++ " " ++ (emitOperand dst)
+        emitInstruction (JmpCC condition label) = "    j" ++ cond condition ++ " " ++ label
+        emitInstruction (SetCC condition dst) = "    set" ++ cond condition ++ " " ++ emitOperand dst
 
         twoOp :: TwoOperandInstruction -> String
         twoOp Mov = "movl"
@@ -281,13 +278,13 @@ emitProgram (Program fun) = (emitFunction fun) ++ [".section .note.GNU-stack,\"\
         cond LE = "le"
 
         emitOperand :: Operand -> String
-        emitOperand (Imm n) = "$" ++ (show n)
+        emitOperand (Imm n) = "$" ++ show n
         emitOperand (Register AX) = "%eax"
         emitOperand (Register CX) = "%ecx"
         emitOperand (Register CL) = "%cl"
         emitOperand (Register DX) = "%edx"
         emitOperand (Register R10) = "%r10d"
         emitOperand (Register R11) = "%r11d"
-        emitOperand (Stack n) = (show n)++"(%rbp)"
+        emitOperand (Stack n) = show n ++ "(%rbp)"
         emitOperand (Pseudo name) = error $ "emitOperand: unexpected Pseudo operand: " ++ name
 
