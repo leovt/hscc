@@ -39,6 +39,7 @@ data Declaration
 data Statement
     = ReturnStatement Expression
     | ExpressionStatement Expression
+    | IfStatement Expression Statement (Maybe Statement)
     | NullStatement
     deriving (Show)
 
@@ -47,6 +48,7 @@ data Expression
     | Variable String
     | Unary UnaryOperator Expression
     | Binary BinaryOperator Expression Expression
+    | Conditional Expression Expression Expression
     deriving (Show)
 
 data UnaryOperator
@@ -163,22 +165,36 @@ parse_blockitems tokens = Just (parse_blockitems_seq ([], tokens))
         parse_blockitems_seq :: ([BlockItem], [Token]) -> ([BlockItem], [Token])
         parse_blockitems_seq (items, TokCloseBrace:tokens) = (items, TokCloseBrace:tokens)
         parse_blockitems_seq (items, tokens) = 
-            case parse_statement tokens of
+            case parseStatement tokens of
                 Just (stmt, rest) -> parse_blockitems_seq (items ++ [Stmt stmt], rest)
                 Nothing -> case parse_declaration tokens of
                     Just (decl, rest) -> parse_blockitems_seq (items ++ [Decl decl], rest)
-                    Nothing -> error $ "expected block item " ++ show tokens ++ "\n" ++ show (parse_statement tokens)
+                    Nothing -> error $ "expected block item " ++ show tokens ++ "\n" ++ show (parseStatement tokens)
 
-parse_statement :: [Token] -> Maybe (Statement, [Token])
-parse_statement (TokKeyReturn:tail) = do
-    (expr, rest) <- parse_expression tail
+parseStatement :: [Token] -> Maybe (Statement, [Token])
+parseStatement (TokKeyReturn:tail) = do
+    (expr, rest) <- parseExpression tail
     case rest of
         TokSemicolon:rest' -> return (ReturnStatement expr, rest')
         _ -> Nothing
-parse_statement (TokSemicolon:tail) = do 
+parseStatement (TokSemicolon:tail) = do 
     return (NullStatement, tail)
-parse_statement tokens = do 
-    (expr, rest) <- parse_expression tokens
+parseStatement (TokKeyIf:tail) = do
+    case tail of 
+        TokOpenParen:rest -> do
+            (condExpr, rest') <- parseExpression rest
+            case rest' of 
+                TokCloseParen:rest'' -> do
+                    (thenStmt, rest''') <- parseStatement rest''
+                    case rest''' of
+                        TokKeyElse:rest'''' -> do
+                            (elseStmt, rest''''') <- parseStatement rest''''
+                            return (IfStatement condExpr thenStmt (Just elseStmt), rest''''')
+                        _ -> return (IfStatement condExpr thenStmt Nothing, rest''')
+                _ -> error "expected ')' after 'if (condition'"
+        _ -> error "expected '(' after 'if'"
+parseStatement tokens = do 
+    (expr, rest) <- parseExpression tokens
     case rest of
         TokSemicolon:rest' -> return (ExpressionStatement expr, rest')
         _ -> Nothing
@@ -186,7 +202,7 @@ parse_statement tokens = do
 parse_declaration :: [Token] -> Maybe (Declaration, [Token])
 parse_declaration (TokKeyInt:(TokIdent name):tokens) = case tokens of
     (TokEqual:rest) -> do
-        (expr, rest') <- parse_expression rest
+        (expr, rest') <- parseExpression rest
         case rest' of
             TokSemicolon:rest'' -> return (VariableDeclaration name (Just expr), rest'')
             _ -> Nothing
@@ -223,14 +239,14 @@ parseFactorPrefix (TokDblMinus:tail) = do
     (expr, rest) <- parseFactor tail
     return (Unary PreDecrement expr, rest)
 parseFactorPrefix (TokOpenParen:tail) = do
-    (expr, rest) <- parse_expression tail
+    (expr, rest) <- parseExpression tail
     case rest of
         TokCloseParen:rest' -> return (expr, rest')
         _ -> Nothing
 parseFactorPrefix _ = Nothing
 
-parse_expression :: [Token] -> Maybe (Expression, [Token])
-parse_expression = parse_expression_prec 0 
+parseExpression :: [Token] -> Maybe (Expression, [Token])
+parseExpression = parse_expression_prec 0 
     where
         parse_expression_prec :: Int -> [Token] -> Maybe (Expression, [Token])
         parse_expression_prec min_prec tokens = do
@@ -238,6 +254,18 @@ parse_expression = parse_expression_prec 0
             parse_rhs min_prec left rest
 
         parse_rhs :: Int -> Expression -> [Token] -> Maybe (Expression, [Token])
+        parse_rhs min_prec left (TokQuestion:rest) =
+            let prec = 3
+                assoc = 0
+            in if prec < min_prec 
+                then Just (left, TokQuestion:rest)
+                else do
+                    (midExpr, rest') <- parseExpression rest
+                    case rest' of 
+                        TokColon:rest'' -> do
+                            (rightExpr, rest''') <- parse_expression_prec (assoc + prec) rest''
+                            parse_rhs min_prec (Conditional left midExpr rightExpr) rest'''
+                        _ -> error "expected ':' in conditional expression"
         parse_rhs min_prec left (token:rest) = 
             case binop token of
                 Just operator -> 
@@ -250,3 +278,4 @@ parse_expression = parse_expression_prec 0
                             parse_rhs min_prec (Binary operator left right) rest'
                 Nothing -> Just (left, token:rest)
         parse_rhs _ left [] = Just (left, [])
+

@@ -14,6 +14,8 @@ data Token
     | TokKeyInt
     | TokKeyVoid
     | TokKeyReturn
+    | TokKeyIf
+    | TokKeyElse
     | TokOpenParen  -- (
     | TokCloseParen -- )
     | TokOpenBrace  -- {
@@ -52,6 +54,8 @@ data Token
     | TokCircumflexEqual
     | TokDblLessEqual
     | TokDblGreaterEqual
+    | TokQuestion -- ?
+    | TokColon    -- :
     deriving (Show, Eq)
 
 data Position = Position {line::Int, column::Int}
@@ -115,6 +119,8 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
         map_keyword "int" = TokKeyInt
         map_keyword "void" = TokKeyVoid
         map_keyword "return" = TokKeyReturn
+        map_keyword "if" = TokKeyIf
+        map_keyword "else" = TokKeyElse
         map_keyword ident = TokIdent ident
 
 
@@ -125,7 +131,7 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
         id_start = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
         digits = "0123456789"
         id_continue = id_start ++ digits
-        punctuation = "-~+*/%&|^<>!="
+        punctuation = "-~+*/%&|^<>!=?:"
 
         punctuationToken "-"  = Just TokMinus
         punctuationToken "--" = Just TokDblMinus
@@ -160,4 +166,6 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
         punctuationToken "^="  = Just TokCircumflexEqual
         punctuationToken "<<=" = Just TokDblLessEqual
         punctuationToken ">>=" = Just TokDblGreaterEqual
+        punctuationToken "?"  = Just TokQuestion
+        punctuationToken ":"  = Just TokColon
         punctuationToken _ = Nothing

@@ -82,6 +82,28 @@ translate program nextID' = evalState (translateProgram program) initState
             return instructions
         translateStatement P.NullStatement = return []
 
+        translateStatement (P.IfStatement cond thenStmt maybeElseStmt) = do
+            (cond_instructions, cond_value) <- translateExpression cond
+            then_instructions <- translateStatement thenStmt
+            end_label <- newId "if.end"
+            else_label <- newId "if.else"
+
+            let jump_label = case maybeElseStmt of
+                    Just _ -> else_label
+                    Nothing -> end_label
+
+            else_block <- case maybeElseStmt of 
+                Just elseStmt -> do 
+                    else_instructions <- translateStatement elseStmt
+                    return $ [ Jump end_label, Label else_label ] ++ else_instructions
+                Nothing -> return []
+            
+            return ( cond_instructions ++
+                             [ JumpIfZero jump_label cond_value ] ++
+                             then_instructions ++
+                             else_block ++
+                             [ Label end_label ] )
+
         translateExpression :: P.Expression -> TransM ([Instruction], Value)
         translateExpression (P.Constant c) = do
             return ([], Constant c)
@@ -190,4 +212,21 @@ translate program nextID' = evalState (translateProgram program) initState
 
         translateExpression (P.Variable name) = do 
             return ([], Variable name)
+
+        translateExpression (P.Conditional condExpr thenExpr elseExpr) = do
+            (cond_instructions, cond_value) <- translateExpression condExpr
+            else_label <- newId "cond.else"
+            end_label <- newId "cond.end"
+            (then_instructions, then_value) <- translateExpression thenExpr
+            (else_instructions, else_value) <- translateExpression elseExpr
+            varid <- newId "tmp.cond"
+            let destination = Variable varid
+            let instructions =  
+                    cond_instructions ++
+                    [ JumpIfZero else_label cond_value ] ++
+                    then_instructions ++
+                    [ Copy then_value destination, Jump end_label, Label else_label ] ++
+                    else_instructions ++
+                    [ Copy else_value destination, Label end_label]
+            return (instructions, destination)
 

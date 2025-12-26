@@ -71,13 +71,23 @@ validate program =
                 name' <- resolveNameDecl name
                 init' <- mapM resolveExpression init
                 return (Decl (VariableDeclaration name' init'))
-            resolveBlockItem (Stmt (ReturnStatement expr)) = do
+            resolveBlockItem (Stmt stmt) = do
+                stmt' <- resolveStatement stmt
+                return (Stmt stmt')
+
+            resolveStatement :: Statement -> TransM Statement   
+            resolveStatement (ReturnStatement expr) = do
                 expr' <- resolveExpression expr
-                return (Stmt (ReturnStatement expr'))
-            resolveBlockItem (Stmt (ExpressionStatement expr)) = do
+                return (ReturnStatement expr')
+            resolveStatement (ExpressionStatement expr) = do
                 expr' <- resolveExpression expr
-                return (Stmt (ExpressionStatement expr'))
-            resolveBlockItem other = do return other
+                return (ExpressionStatement expr')
+            resolveStatement (IfStatement cond thenStmt maybeElseStmt) = do
+                cond' <- resolveExpression cond
+                thenStmt' <- resolveStatement thenStmt
+                maybeElseStmt' <- mapM resolveStatement maybeElseStmt
+                return (IfStatement cond' thenStmt' maybeElseStmt')
+            resolveStatement NullStatement = return NullStatement
 
             resolveExpression :: Expression -> TransM Expression
             resolveExpression (Variable name) = do
@@ -117,7 +127,12 @@ validate program =
                 left' <- resolveExpression left
                 right' <- resolveExpression right
                 return (Binary op left' right') 
-            resolveExpression other = do return other
+            resolveExpression (Constant c) = pure (Constant c)
+            resolveExpression (Conditional cond trueExpr falseExpr) = do
+                cond' <- resolveExpression cond
+                trueExpr' <- resolveExpression trueExpr
+                falseExpr' <- resolveExpression falseExpr
+                return (Conditional cond' trueExpr' falseExpr')
                 
 
 
