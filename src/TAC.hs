@@ -134,7 +134,17 @@ translate program nextID' = evalState (translateProgram program) initState
             (r_instructions, right') <- translateExpression right
             return (r_instructions ++ [Copy right' (Variable left)], right')
 
+        translateExpression (P.Binary (P.CompoundAssignment op) (P.Variable left) right) = do
+            (l_instructions, left') <- translateExpression (P.Variable left)
+            (r_instructions, right') <- translateExpression right
+            varid <- newId "tmp"
+            let destination = Variable varid
+            return (l_instructions ++ 
+                r_instructions ++ 
+                [Binary op left' right' destination, Copy destination (Variable left)], destination)
+
         translateExpression (P.Binary P.Assignment _ _) = error "assign to non-variable."
+        translateExpression (P.Binary (P.CompoundAssignment _) _ _) = error "assign to non-variable."
 
         translateExpression (P.Binary op left right) = do
             (l_instructions, left') <- translateExpression left

@@ -12,7 +12,7 @@ import Parser
     , Statement(..)
     , Expression(..)
     , Declaration(..)
-    , BinaryOperator(Assignment)
+    , BinaryOperator(Assignment, CompoundAssignment)
     )
 
 data TransState = TransState { nextID :: Int, locals :: [Data.Map.Map String String] }
@@ -89,7 +89,12 @@ validate program =
                 left' <- resolveName left
                 right' <- resolveExpression right
                 return (Binary Assignment (Variable left') right') 
+            resolveExpression (Binary (CompoundAssignment op) (Variable left) right) = do
+                left' <- resolveName left
+                right' <- resolveExpression right
+                return (Binary (CompoundAssignment op) (Variable left') right') 
             resolveExpression (Binary Assignment _ _) = error "assign to non-variable."
+            resolveExpression (Binary (CompoundAssignment _) _ _) = error "assign to non-variable."
             resolveExpression (Binary op left right) = do
                 left' <- resolveExpression left
                 right' <- resolveExpression right

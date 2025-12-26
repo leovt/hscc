@@ -147,7 +147,8 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
         translateBinary Remainder = error "Remainder does not translate to a two operand form."
         translateBinary LogicAnd = error "LogicAnd does not translate to a two operand form."
         translateBinary LogicOr = error "LogicOr does not translate to a two operand form."
-        translateBinary Assignment = error "LogicOr does not translate to a two operand form."
+        translateBinary Assignment = error "Assignment does not translate to a two operand form."
+        translateBinary (CompoundAssignment _) = error "CompoundAssignment does not translate to a two operand form."
 
         translateValue :: T.Value -> Operand
         translateValue (T.Constant c) = Imm c

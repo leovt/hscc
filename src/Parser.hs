@@ -75,6 +75,7 @@ data BinaryOperator
     | LessOrEqual
     | GreaterOrEqual
     | Assignment
+    | CompoundAssignment BinaryOperator
     deriving (Show)
 
 binop :: Token -> Maybe BinaryOperator
@@ -97,6 +98,11 @@ binop TokGreater    = Just Greater
 binop TokLessEqual  = Just LessOrEqual
 binop TokGreaterEqual = Just GreaterOrEqual
 binop TokEqual      = Just Assignment
+binop TokPlusEqual  = Just (CompoundAssignment Add)
+binop TokMinusEqual = Just (CompoundAssignment Subtract)
+binop TokAsteriskEqual = Just (CompoundAssignment Multiply)
+binop TokSlashEqual = Just (CompoundAssignment Divide)
+binop TokPercentEqual = Just (CompoundAssignment Remainder)
 binop _             = Nothing
 
 precedence :: BinaryOperator -> Int
@@ -119,10 +125,12 @@ precedence BitOr       = 23
 precedence LogicAnd    = 20
 precedence LogicOr     = 18
 precedence Assignment  = 1
+precedence (CompoundAssignment _) = 1
 
 associativity :: BinaryOperator -> Int
 associativity op = case op of
     Assignment -> 0 -- right_associative
+    CompoundAssignment _ -> 0 -- compound assignments are also right-associative
     _other -> 1 -- left_associative
 
 parse_program :: [Token] -> Maybe Program
