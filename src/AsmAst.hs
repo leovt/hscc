@@ -127,6 +127,10 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
         translateUnary Complement = Not
         translateUnary Negate = Neg    
         translateUnary LogicNot = error "LogicNot does not translate to a one operand form."
+        translateUnary PreIncrement = error "PreIncrement does not translate to a one operand form."
+        translateUnary PreDecrement = error "PreDecrement does not translate to a one operand form."
+        translateUnary PostIncrement = error "PostIncrement does not translate to a one operand form."
+        translateUnary PostDecrement = error "PostDecrement does not translate to a one operand form."
 
         translateBinary :: BinaryOperator -> Binop
         translateBinary P.Add = Arithmetic AsmAst.Add

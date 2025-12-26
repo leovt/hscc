@@ -21,8 +21,9 @@ data Token
     | TokSemicolon  -- ;
     | TokTilde      -- ~
     | TokMinus      -- -
-    | TokMinusMinus -- --
+    | TokDblMinus   -- --
     | TokPlus       -- +
+    | TokDblPlus    -- ++
     | TokAsterisk   -- *
     | TokSlash      -- /
     | TokPercent    -- %
@@ -127,9 +128,10 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
         punctuation = "-~+*/%&|^<>!="
 
         punctuationToken "-"  = Just TokMinus
-        punctuationToken "--" = Just TokMinusMinus
+        punctuationToken "--" = Just TokDblMinus
         punctuationToken "~"  = Just TokTilde
         punctuationToken "+"  = Just TokPlus
+        punctuationToken "++" = Just TokDblPlus 
         punctuationToken "*"  = Just TokAsterisk
         punctuationToken "/"  = Just TokSlash
         punctuationToken "%"  = Just TokPercent

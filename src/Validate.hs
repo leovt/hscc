@@ -13,6 +13,7 @@ import Parser
     , Expression(..)
     , Declaration(..)
     , BinaryOperator(Assignment, CompoundAssignment)
+    , UnaryOperator (..)
     )
 
 data TransState = TransState { nextID :: Int, locals :: [Data.Map.Map String String] }
@@ -82,6 +83,23 @@ validate program =
             resolveExpression (Variable name) = do
                 name' <- resolveName name
                 return (Variable name')
+            resolveExpression (Unary PreDecrement (Variable var)) = do
+                expr' <- resolveExpression (Variable var)
+                return (Unary PreDecrement expr')
+            resolveExpression (Unary PreIncrement (Variable var)) = do
+                expr' <- resolveExpression (Variable var)
+                return (Unary PreIncrement expr')
+            resolveExpression (Unary PostDecrement (Variable var)) = do
+                expr' <- resolveExpression (Variable var)
+                return (Unary PostDecrement expr')
+            resolveExpression (Unary PostIncrement (Variable var)) = do
+                expr' <- resolveExpression (Variable var)
+                return (Unary PostIncrement expr')
+            resolveExpression (Unary PreDecrement _) = do error "PreDecrement applied to non-variable."
+            resolveExpression (Unary PreIncrement _) = do error "PreIncrement applied to non-variable."
+            resolveExpression (Unary PostDecrement _) = do error "PostDecrement applied to non-variable."
+            resolveExpression (Unary PostIncrement _) = do error "PostIncrement applied to non-variable."
+
             resolveExpression (Unary op expr) = do
                 expr' <- resolveExpression expr
                 return (Unary op expr')

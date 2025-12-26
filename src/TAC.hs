@@ -86,6 +86,41 @@ translate program nextID' = evalState (translateProgram program) initState
         translateExpression (P.Constant c) = do
             return ([], Constant c)
 
+        translateExpression (P.Unary P.PreIncrement (P.Variable name)) = do
+            varid <- newId "tmp"
+            let destination = Variable varid
+            return ([Binary P.Add (Variable name) (Constant 1) destination,
+                     Copy destination (Variable name)], destination)
+
+        translateExpression (P.Unary P.PreDecrement (P.Variable name)) = do
+            varid <- newId "tmp"
+            let destination = Variable varid
+            return ([Binary P.Subtract (Variable name) (Constant 1) destination,
+                     Copy destination (Variable name)], destination)
+
+        translateExpression (P.Unary P.PostIncrement (P.Variable name)) = do
+            varid <- newId "tmp"
+            let destination = Variable varid
+            varid <- newId "tmp"
+            let newvalue = Variable varid
+            return ([Copy (Variable name) destination, 
+                     Binary P.Add destination  (Constant 1) newvalue,
+                     Copy newvalue (Variable name)], destination)
+
+        translateExpression (P.Unary P.PostDecrement (P.Variable name)) = do
+            varid <- newId "tmp"
+            let destination = Variable varid
+            varid <- newId "tmp"
+            let newvalue = Variable varid
+            return ([Copy (Variable name) destination, 
+                     Binary P.Subtract destination  (Constant 1) newvalue,
+                     Copy newvalue (Variable name)], destination)
+
+        translateExpression (P.Unary P.PostDecrement _) = error "PostDecrement on non-variable."
+        translateExpression (P.Unary P.PostIncrement _) = error "PostIncrement on non-variable."
+        translateExpression (P.Unary P.PreDecrement _) = error "PreDecrement on non-variable."
+        translateExpression (P.Unary P.PreIncrement _) = error "PreIncrement on non-variable."
+
         translateExpression (P.Unary op expression) = do
             (instructions, value) <- translateExpression expression
             varid <- newId "tmp"

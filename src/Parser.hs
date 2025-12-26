@@ -53,6 +53,10 @@ data UnaryOperator
     = Complement
     | Negate
     | LogicNot
+    | PreIncrement
+    | PreDecrement
+    | PostIncrement
+    | PostDecrement
     deriving (Show)
 
 data BinaryOperator
@@ -190,32 +194,47 @@ parse_declaration (TokKeyInt:(TokIdent name):tokens) = case tokens of
     _ -> Nothing
 parse_declaration _ = Nothing
     
+parseFactor :: [Token] -> Maybe (Expression, [Token])
+parseFactor tokens = do
+    (expr, rest) <- parseFactorPrefix tokens
+    parseFactorSuffix expr rest
+    where
+        parseFactorSuffix :: Expression -> [Token] -> Maybe (Expression, [Token])
+        parseFactorSuffix expr (TokDblPlus:rest) = parseFactorSuffix (Unary PostIncrement expr) rest
+        parseFactorSuffix expr (TokDblMinus:rest) = parseFactorSuffix (Unary PostDecrement expr) rest
+        parseFactorSuffix expr rest = Just (expr, rest)
 
-parse_factor :: [Token] -> Maybe (Expression, [Token])
-parse_factor ((TokInt n):tail) = return (Constant n, tail)
-parse_factor ((TokIdent n):tail) = return (Variable n, tail)
-parse_factor (TokMinus:tail) = do
-    (expr, rest) <- parse_factor tail
+parseFactorPrefix :: [Token] -> Maybe (Expression, [Token])
+parseFactorPrefix ((TokInt n):tail) = return (Constant n, tail)
+parseFactorPrefix ((TokIdent n):tail) = return (Variable n, tail)
+parseFactorPrefix (TokMinus:tail) = do
+    (expr, rest) <- parseFactor tail
     return (Unary Negate expr, rest)
-parse_factor (TokTilde:tail) = do
-    (expr, rest) <- parse_factor tail
+parseFactorPrefix (TokTilde:tail) = do
+    (expr, rest) <- parseFactor tail
     return (Unary Complement expr, rest)
-parse_factor (TokBang:tail) = do
-    (expr, rest) <- parse_factor tail
+parseFactorPrefix (TokBang:tail) = do
+    (expr, rest) <- parseFactor tail
     return (Unary LogicNot expr, rest)
-parse_factor (TokOpenParen:tail) = do
+parseFactorPrefix (TokDblPlus:tail) = do
+    (expr, rest) <- parseFactor tail
+    return (Unary PreIncrement expr, rest)
+parseFactorPrefix (TokDblMinus:tail) = do
+    (expr, rest) <- parseFactor tail
+    return (Unary PreDecrement expr, rest)
+parseFactorPrefix (TokOpenParen:tail) = do
     (expr, rest) <- parse_expression tail
     case rest of
         TokCloseParen:rest' -> return (expr, rest')
         _ -> Nothing
-parse_factor _ = Nothing
+parseFactorPrefix _ = Nothing
 
 parse_expression :: [Token] -> Maybe (Expression, [Token])
 parse_expression = parse_expression_prec 0 
     where
         parse_expression_prec :: Int -> [Token] -> Maybe (Expression, [Token])
         parse_expression_prec min_prec tokens = do
-            (left, rest) <- parse_factor tokens
+            (left, rest) <- parseFactor tokens
             parse_rhs min_prec left rest
 
         parse_rhs :: Int -> Expression -> [Token] -> Maybe (Expression, [Token])
