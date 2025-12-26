@@ -46,6 +46,11 @@ data Token
     | TokAsteriskEqual -- *=
     | TokSlashEqual
     | TokPercentEqual -- %=
+    | TokAmpersandEqual
+    | TokPipeEqual
+    | TokCircumflexEqual
+    | TokDblLessEqual
+    | TokDblGreaterEqual
     deriving (Show, Eq)
 
 data Position = Position {line::Int, column::Int}
@@ -148,4 +153,9 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
         punctuationToken "*=" = Just TokAsteriskEqual
         punctuationToken "/=" = Just TokSlashEqual
         punctuationToken "%=" = Just TokPercentEqual
+        punctuationToken "&="  = Just TokAmpersandEqual
+        punctuationToken "|="  = Just TokPipeEqual
+        punctuationToken "^="  = Just TokCircumflexEqual
+        punctuationToken "<<=" = Just TokDblLessEqual
+        punctuationToken ">>=" = Just TokDblGreaterEqual
         punctuationToken _ = Nothing

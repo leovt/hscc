@@ -98,11 +98,16 @@ binop TokGreater    = Just Greater
 binop TokLessEqual  = Just LessOrEqual
 binop TokGreaterEqual = Just GreaterOrEqual
 binop TokEqual      = Just Assignment
-binop TokPlusEqual  = Just (CompoundAssignment Add)
-binop TokMinusEqual = Just (CompoundAssignment Subtract)
-binop TokAsteriskEqual = Just (CompoundAssignment Multiply)
-binop TokSlashEqual = Just (CompoundAssignment Divide)
-binop TokPercentEqual = Just (CompoundAssignment Remainder)
+binop TokPlusEqual       = Just (CompoundAssignment Add)
+binop TokMinusEqual      = Just (CompoundAssignment Subtract)
+binop TokAsteriskEqual   = Just (CompoundAssignment Multiply)
+binop TokSlashEqual      = Just (CompoundAssignment Divide)
+binop TokPercentEqual    = Just (CompoundAssignment Remainder)
+binop TokAmpersandEqual  = Just (CompoundAssignment BitAnd)
+binop TokPipeEqual       = Just (CompoundAssignment BitOr)
+binop TokCircumflexEqual = Just (CompoundAssignment BitXor)
+binop TokDblLessEqual    = Just (CompoundAssignment ShiftLeft)
+binop TokDblGreaterEqual = Just (CompoundAssignment ShiftRight)
 binop _             = Nothing
 
 precedence :: BinaryOperator -> Int
