@@ -119,7 +119,7 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
       Just _ -> (LS_Punctuation start (punct ++ [c]), Right tokens)
       Nothing -> case punctuationToken punct of
         Just token -> step (LS_Start, Right ((token, Span start pos) : tokens)) (c, pos)
-        Nothing -> error $ "punctuationToken: unexpected Nothing for punct: " ++ show punct
+        Nothing -> (LS_Start, Left ("punctuationToken: unexpected punctuation: " ++ show punct))
 
     map_keyword "int" = TokKeyInt
     map_keyword "void" = TokKeyVoid

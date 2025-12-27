@@ -15,11 +15,7 @@ where
 import Lexer (LocatedToken, Token (..))
 
 parser :: [LocatedToken] -> Either String Program
-parser loctokens = case parseProgram tokens of
-  Just p -> Right p
-  Nothing -> Left "Could not parse."
-  where
-    tokens = map fst loctokens
+parser loctokens = parseProgram (map fst loctokens)
 
 {- HLINT ignore "Use newtype instead of data" -}
 data Program
@@ -153,91 +149,100 @@ associativity op = case op of
   CompoundAssignment _ -> 0 -- compound assignments are also right-associative
   _other -> 1 -- left_associative
 
-parseProgram :: [Token] -> Maybe Program
+parseProgram :: [Token] -> Either String Program
 parseProgram tokens = do
   (fun, rest) <- parseFunction tokens
   case rest of
     [] -> return (Program fun)
-    _ -> Nothing
+    _ -> Left "unexpected tokens after function"
 
-parseFunction :: [Token] -> Maybe (Function, [Token])
+parseFunction :: [Token] -> Either String (Function, [Token])
 parseFunction (TokKeyInt : TokIdent name : TokOpenParen : TokKeyVoid : TokCloseParen : TokOpenBrace : tail) = do
   (items, rest) <- parseBlockitems tail
   case rest of
     TokCloseBrace : rest' -> return (Function name items, rest')
-    _ -> Nothing
-parseFunction _ = Nothing
+    _ -> Left "expected '}' at end of function"
+parseFunction _ = Left "expected function"
 
-parseBlockitems :: [Token] -> Maybe ([BlockItem], [Token])
-parseBlockitems tokens = Just (parse_blockitems_seq ([], tokens))
+parseBlockitems :: [Token] -> Either String ([BlockItem], [Token])
+parseBlockitems tokens = parse_blockitems_seq ([], tokens)
   where
-    parse_blockitems_seq :: ([BlockItem], [Token]) -> ([BlockItem], [Token])
-    parse_blockitems_seq (items, TokCloseBrace : tokens) = (items, TokCloseBrace : tokens)
-    parse_blockitems_seq (items, tokens) =
-      case parseStatement tokens of
-        Just (stmt, rest) -> parse_blockitems_seq (items ++ [Stmt stmt], rest)
-        Nothing -> case parseDeclaration tokens of
-          Just (decl, rest) -> parse_blockitems_seq (items ++ [Decl decl], rest)
-          Nothing -> error $ "expected block item " ++ show tokens ++ "\n" ++ show (parseStatement tokens)
+    parse_blockitems_seq :: ([BlockItem], [Token]) -> Either String ([BlockItem], [Token])
+    parse_blockitems_seq (items, TokCloseBrace : tokens) = Right (items, TokCloseBrace : tokens)
+    parse_blockitems_seq (items, tokens) = do
+      suite <- parseDeclaration tokens
+      case suite of
+        Just (decl, rest) -> parse_blockitems_seq (items ++ [Decl decl], rest)
+        Nothing -> do
+          suite' <- parseStatement tokens
+          case suite' of
+            Just (stmt, rest) -> parse_blockitems_seq (items ++ [Stmt stmt], rest)
+            Nothing -> Left $ "expected block item " ++ show tokens ++ "\n" ++ show (parseStatement tokens)
 
-parseStatement :: [Token] -> Maybe (Statement, [Token])
+parseStatement :: [Token] -> Either String (Maybe (Statement, [Token]))
 parseStatement (TokKeyReturn : tail) = do
   (expr, rest) <- parseExpression tail
   case rest of
-    TokSemicolon : rest' -> return (ReturnStatement expr, rest')
-    _ -> Nothing
+    TokSemicolon : rest' -> return (Just (ReturnStatement expr, rest'))
+    _ -> Left "expected ';' after return statement"
 parseStatement (TokSemicolon : tail) = do
-  return (NullStatement, tail)
+  return (Just (NullStatement, tail))
 parseStatement (TokKeyIf : tail) = do
   case tail of
     TokOpenParen : rest -> do
       (condExpr, rest') <- parseExpression rest
       case rest' of
         TokCloseParen : rest'' -> do
-          (thenStmt, rest''') <- parseStatement rest''
-          case rest''' of
-            TokKeyElse : rest'''' -> do
-              (elseStmt, rest''''') <- parseStatement rest''''
-              return (IfStatement condExpr thenStmt (Just elseStmt), rest''''')
-            _ -> return (IfStatement condExpr thenStmt Nothing, rest''')
-        _ -> error "expected ')' after 'if (condition'"
-    _ -> error "expected '(' after 'if'"
+          suite <- parseStatement rest''
+          case suite of
+            Nothing -> Left "expected statement after if condition"
+            Just (thenStmt, rest''') -> case rest''' of
+              TokKeyElse : rest'''' -> do
+                suite' <- parseStatement rest''''
+                case suite' of
+                  Nothing -> Left "expected statement after else"
+                  Just (elseStmt, rest''''') -> return (Just (IfStatement condExpr thenStmt (Just elseStmt), rest'''''))
+              _ -> return (Just (IfStatement condExpr thenStmt Nothing, rest'''))
+        _ -> Left "expected ')' after 'if (condition'"
+    _ -> Left "expected '(' after 'if'"
 parseStatement (TokIdent labelName : TokColon : tail) = do
   let label = Label labelName
-  (stmt, rest) <- parseStatement tail
-  return (LabelledStatement label stmt, rest)
+  suite <- parseStatement tail
+  case suite of
+    Nothing -> Left "expected statement after label"
+    Just (stmt, rest) -> return (Just (LabelledStatement label stmt, rest))
 parseStatement (TokKeyGoto : TokIdent labelName : tail) = do
   case tail of
-    TokSemicolon : rest -> return (GotoStatement labelName, rest)
-    _ -> error "expected ';' after 'goto label'"
+    TokSemicolon : rest -> return (Just (GotoStatement labelName, rest))
+    _ -> Left "expected ';' after 'goto label'"
 parseStatement tokens = do
   (expr, rest) <- parseExpression tokens
   case rest of
-    TokSemicolon : rest' -> return (ExpressionStatement expr, rest')
-    _ -> Nothing
+    TokSemicolon : rest' -> return (Just (ExpressionStatement expr, rest'))
+    _ -> Left "expected ';' after expression statement"
 
-parseDeclaration :: [Token] -> Maybe (Declaration, [Token])
+parseDeclaration :: [Token] -> Either String (Maybe (Declaration, [Token]))
 parseDeclaration (TokKeyInt : (TokIdent name) : tokens) = case tokens of
   (TokEqual : rest) -> do
     (expr, rest') <- parseExpression rest
     case rest' of
-      TokSemicolon : rest'' -> return (VariableDeclaration name (Just expr), rest'')
-      _ -> Nothing
-  (TokSemicolon : rest) -> Just (VariableDeclaration name Nothing, rest)
-  _ -> Nothing
-parseDeclaration _ = Nothing
+      TokSemicolon : rest'' -> return (Just (VariableDeclaration name (Just expr), rest''))
+      _ -> Left "expected ';' after variable declaration"
+  (TokSemicolon : rest) -> return (Just (VariableDeclaration name Nothing, rest))
+  _ -> Left "expected ';' or '=' after variable declaration"
+parseDeclaration _ = Right Nothing
 
-parseFactor :: [Token] -> Maybe (Expression, [Token])
+parseFactor :: [Token] -> Either String (Expression, [Token])
 parseFactor tokens = do
   (expr, rest) <- parseFactorPrefix tokens
   parseFactorSuffix expr rest
   where
-    parseFactorSuffix :: Expression -> [Token] -> Maybe (Expression, [Token])
+    parseFactorSuffix :: Expression -> [Token] -> Either String (Expression, [Token])
     parseFactorSuffix expr (TokDblPlus : rest) = parseFactorSuffix (Unary PostIncrement expr) rest
     parseFactorSuffix expr (TokDblMinus : rest) = parseFactorSuffix (Unary PostDecrement expr) rest
-    parseFactorSuffix expr rest = Just (expr, rest)
+    parseFactorSuffix expr rest = Right (expr, rest)
 
-parseFactorPrefix :: [Token] -> Maybe (Expression, [Token])
+parseFactorPrefix :: [Token] -> Either String (Expression, [Token])
 parseFactorPrefix ((TokInt n) : tail) = return (Constant n, tail)
 parseFactorPrefix ((TokIdent n) : tail) = return (Variable n, tail)
 parseFactorPrefix (TokMinus : tail) = do
@@ -259,39 +264,40 @@ parseFactorPrefix (TokOpenParen : tail) = do
   (expr, rest) <- parseExpression tail
   case rest of
     TokCloseParen : rest' -> return (expr, rest')
-    _ -> Nothing
-parseFactorPrefix _ = Nothing
+    _ -> Left "expected ')'"
+parseFactorPrefix (token : _) = Left $ "unexpected token" ++ show token
+parseFactorPrefix [] = Left "unexpected end of input"
 
-parseExpression :: [Token] -> Maybe (Expression, [Token])
+parseExpression :: [Token] -> Either String (Expression, [Token])
 parseExpression = parse_expression_prec 0
   where
-    parse_expression_prec :: Int -> [Token] -> Maybe (Expression, [Token])
+    parse_expression_prec :: Int -> [Token] -> Either String (Expression, [Token])
     parse_expression_prec min_prec tokens = do
       (left, rest) <- parseFactor tokens
       parse_rhs min_prec left rest
 
-    parse_rhs :: Int -> Expression -> [Token] -> Maybe (Expression, [Token])
+    parse_rhs :: Int -> Expression -> [Token] -> Either String (Expression, [Token])
     parse_rhs min_prec left (TokQuestion : rest) =
       let prec = 3
           assoc = 0
        in if prec < min_prec
-            then Just (left, TokQuestion : rest)
+            then Right (left, TokQuestion : rest)
             else do
               (midExpr, rest') <- parseExpression rest
               case rest' of
                 TokColon : rest'' -> do
                   (rightExpr, rest''') <- parse_expression_prec (assoc + prec) rest''
                   parse_rhs min_prec (Conditional left midExpr rightExpr) rest'''
-                _ -> error "expected ':' in conditional expression"
+                _ -> Left "expected ':' in conditional expression"
     parse_rhs min_prec left (token : rest) =
       case binop token of
         Just operator ->
           let prec = precedence operator
               assoc = associativity operator
            in if prec < min_prec
-                then Just (left, token : rest)
+                then Right (left, token : rest)
                 else do
                   (right, rest') <- parse_expression_prec (assoc + prec) rest
                   parse_rhs min_prec (Binary operator left right) rest'
-        Nothing -> Just (left, token : rest)
-    parse_rhs _ left [] = Just (left, [])
+        Nothing -> Right (left, token : rest)
+    parse_rhs _ left [] = Right (left, [])
