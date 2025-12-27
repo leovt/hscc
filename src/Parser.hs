@@ -2,6 +2,7 @@ module Parser
   ( parser,
     Program (..),
     Function (..),
+    Block (..),
     BlockItem (..),
     Statement (..),
     Declaration (..),
@@ -23,12 +24,15 @@ data Program
   deriving (Show)
 
 data Function
-  = Function String [BlockItem]
+  = Function String Block
   deriving (Show)
 
 data BlockItem
   = Stmt Statement
   | Decl Declaration
+  deriving (Show)
+
+newtype Block = Block [BlockItem]
   deriving (Show)
 
 data Declaration
@@ -157,12 +161,18 @@ parseProgram tokens = do
     _ -> Left "unexpected tokens after function"
 
 parseFunction :: [Token] -> Either String (Function, [Token])
-parseFunction (TokKeyInt : TokIdent name : TokOpenParen : TokKeyVoid : TokCloseParen : TokOpenBrace : tail) = do
-  (items, rest) <- parseBlockitems tail
-  case rest of
-    TokCloseBrace : rest' -> return (Function name items, rest')
-    _ -> Left "expected '}' at end of function"
+parseFunction (TokKeyInt : TokIdent name : TokOpenParen : TokKeyVoid : TokCloseParen : tail) = do
+  (block, rest) <- parseBlock tail
+  return (Function name block, rest)
 parseFunction _ = Left "expected function"
+
+parseBlock :: [Token] -> Either String (Block, [Token])
+parseBlock (TokOpenBrace : tokens) = do
+  (items, rest) <- parseBlockitems tokens
+  case rest of
+    TokCloseBrace : rest' -> return (Block items, rest')
+    _ -> Left "expected '}' at end of block"
+parseBlock _ = Left "expected '{' at start of block"
 
 parseBlockitems :: [Token] -> Either String ([BlockItem], [Token])
 parseBlockitems tokens = parse_blockitems_seq ([], tokens)

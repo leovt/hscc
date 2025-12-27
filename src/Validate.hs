@@ -10,6 +10,7 @@ import qualified Data.Map
 import Data.Maybe (fromJust)
 import Parser
   ( BinaryOperator (Assignment, CompoundAssignment),
+    Block (..),
     BlockItem (..),
     Declaration (..),
     Expression (..),
@@ -110,22 +111,31 @@ validate program =
       return (Program fun')
 
     resolveFunction :: Function -> TransM Function
-    resolveFunction (Function name items) = do
+    resolveFunction (Function name body) = do
       state <- get
-      let outer_locals = locals state
-      put state {locals = Data.Map.empty : outer_locals, labels = Just Data.Map.empty} -- add an empty sub-scope
-      items' <- mapM resolveBlockItem items
+      put state {labels = Just Data.Map.empty}
+      body' <- resolveBlock body
       state <- get
       let labels_map = fromJust (labels state)
       when (any isMissingLabel (Data.Map.elems labels_map)) $
         throwError $
           "Some labels were declared but not defined: " ++ show (filter isMissingLabel (Data.Map.elems labels_map))
-      put state {locals = outer_locals, labels = Nothing} -- pop the sub-scope
-      return (Function name items')
+      put state {labels = Nothing}
+      return (Function name body')
 
     isMissingLabel :: LabelState -> Bool
     isMissingLabel (Missing _) = True
     isMissingLabel _ = False
+
+    resolveBlock :: Block -> TransM Block
+    resolveBlock (Block items) = do
+      state <- get
+      let outer_locals = locals state
+      put state {locals = Data.Map.empty : outer_locals} -- add an empty sub-scope
+      items' <- mapM resolveBlockItem items
+      state <- get
+      put state {locals = outer_locals} -- pop the sub-scope
+      return (Block items')
 
     resolveBlockItem :: BlockItem -> TransM BlockItem
     resolveBlockItem (Decl (VariableDeclaration name init)) = do

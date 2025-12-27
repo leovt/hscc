@@ -61,9 +61,12 @@ translate program nextID' = evalState (translateProgram program) initState
       return (Program fun')
 
     translateFunction :: P.Function -> TransM Function
-    translateFunction (P.Function name items) = do
-      instructions <- concat <$> mapM translateBlockItem items
+    translateFunction (P.Function name body) = do
+      instructions <- translateBlock body
       return (Function name (instructions ++ [Return (Constant 0)]))
+
+    translateBlock :: P.Block -> TransM [Instruction]
+    translateBlock (P.Block items) = concat <$> mapM translateBlockItem items
 
     translateBlockItem :: P.BlockItem -> TransM [Instruction]
     translateBlockItem (P.Stmt s) = translateStatement s
