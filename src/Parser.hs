@@ -8,6 +8,7 @@ module Parser
     , Expression(..)
     , UnaryOperator(..)
     , BinaryOperator(..)
+    , Label(..)
     ) where
 
 import Lexer (LocatedToken, Token(..))
@@ -36,10 +37,16 @@ data Declaration
     = VariableDeclaration String (Maybe Expression)
     deriving (Show)
 
+data Label 
+    = Label String
+    deriving (Show)
+
 data Statement
     = ReturnStatement Expression
     | ExpressionStatement Expression
     | IfStatement Expression Statement (Maybe Statement)
+    | LabelledStatement Label Statement
+    | GotoStatement String
     | NullStatement
     deriving (Show)
 
@@ -193,6 +200,14 @@ parseStatement (TokKeyIf:tail) = do
                         _ -> return (IfStatement condExpr thenStmt Nothing, rest''')
                 _ -> error "expected ')' after 'if (condition'"
         _ -> error "expected '(' after 'if'"
+parseStatement (TokIdent labelName:TokColon:tail) = do
+    let label = Label labelName
+    (stmt, rest) <- parseStatement tail
+    return (LabelledStatement label stmt, rest)
+parseStatement (TokKeyGoto:TokIdent labelName:tail) = do
+    case tail of
+        TokSemicolon:rest -> return (GotoStatement labelName, rest)
+        _ -> error "expected ';' after 'goto label'"
 parseStatement tokens = do 
     (expr, rest) <- parseExpression tokens
     case rest of

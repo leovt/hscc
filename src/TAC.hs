@@ -104,6 +104,13 @@ translate program nextID' = evalState (translateProgram program) initState
                              else_block ++
                              [ Label end_label ] )
 
+        translateStatement (P.LabelledStatement (P.Label labelName) stmt) = do
+            stmt_instructions <- translateStatement stmt
+            return (Label labelName : stmt_instructions)
+
+        translateStatement (P.GotoStatement labelName) = do
+            return [Jump labelName]
+
         translateExpression :: P.Expression -> TransM ([Instruction], Value)
         translateExpression (P.Constant c) = do
             return ([], Constant c)

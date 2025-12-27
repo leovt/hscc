@@ -14,11 +14,24 @@ import Parser
     , Declaration(..)
     , BinaryOperator(Assignment, CompoundAssignment)
     , UnaryOperator (..)
+    , Label(..)
     )
+import Data.Maybe (fromJust)
+import Control.Monad.Except
 
-data TransState = TransState { nextID :: Int, locals :: [Data.Map.Map String String] }
+data LabelState
+    = Defined String
+    | Missing String
+    | Resolved String
+    deriving (Show, Eq)
 
-type TransM a = State TransState a -- the translation monad encapsulating the translation state
+data TransState = TransState 
+    { nextID :: Int
+    , locals :: [Data.Map.Map String String] 
+    , labels :: Maybe (Data.Map.Map String LabelState)
+    }
+
+type TransM a = ExceptT String (State TransState) a -- the translation monad encapsulating the translation state
 
 resolveNameDecl :: String -> TransM String
 resolveNameDecl name = do
@@ -26,7 +39,7 @@ resolveNameDecl name = do
     case locals state of
         [] -> error "not in a context"
         (inner:rest) -> case Data.Map.lookup name inner of
-            Just _ -> error $ "Duplicate declaration of " ++ name
+            Just _ -> throwError $ "Duplicate declaration of " ++ name
             Nothing -> do
                 let n      = nextID state
                     name'  = name ++ "." ++ show n
@@ -39,18 +52,57 @@ resolveName name = do
     state <- get
     return $ res name (locals state)
     where 
-        res _ [] = error $ name ++ " not declared"
+        res _ [] = error "not in a context"
         res name (scope:rest) = case Data.Map.lookup name scope of
             Just name' -> name'
             Nothing -> res name rest
 
+resolveLabelDecl :: String -> TransM String
+resolveLabelDecl name = do
+    state <- get
+    case (labels state) of
+        Nothing -> error "not in a context"
+        (Just labels_map) -> case Data.Map.lookup name labels_map of
+            Just (Resolved _) -> throwError $ "Duplicate declaration of label " ++ name
+            Just (Defined _) -> throwError $ "Duplicate declaration of label " ++ name
+            Just (Missing name') -> do
+                put state {labels = Just (Data.Map.insert name (Resolved name') labels_map)}
+                return name'
+            Nothing -> do
+                let n      = nextID state
+                    name'  = name ++ "." ++ show n
+                    labels_map' = (Data.Map.insert name (Defined name') labels_map)
+                put state {nextID = n+1, labels = Just labels_map'}
+                return name'
+
+
+resolveLabel :: String -> TransM String
+resolveLabel name = do
+    state <- get
+    case (labels state) of
+        Nothing -> error "not in a context"
+        (Just labels_map) -> case Data.Map.lookup name labels_map of
+            Just (Resolved name') -> pure name'
+            Just (Missing name') -> pure name'
+            Just (Defined name') -> do
+                put state {labels = Just (Data.Map.insert name (Resolved name') labels_map)}
+                return name'
+            Nothing -> do
+                let n      = nextID state
+                    name'  = name ++ "." ++ show n
+                    labels_map' = (Data.Map.insert name (Missing name') labels_map)
+                put state {nextID = n+1, labels = Just labels_map'}
+                return name'
+
+
 
 validate :: Program -> Either String (Program, Int)
 validate program = 
-    let (result, finalState) = runState (resolveProgram program) initState 
-    in Right(result, nextID finalState)
+    case runState (runExceptT (resolveProgram program)) initState of
+        (Left err, _) -> Left err
+        (Right result, finalState) -> Right(result, nextID finalState)
         where
-            initState = TransState { nextID = 1001, locals = [] }
+            initState = TransState { nextID = 1001, locals = [], labels = Nothing }
 
             resolveProgram :: Program -> TransM Program
             resolveProgram (Program fun) = do 
@@ -61,10 +113,19 @@ validate program =
             resolveFunction (Function name items) = do
                 state <- get
                 let outer_locals = locals state
-                put state {locals = Data.Map.empty:outer_locals} -- add an empty sub-scope
+                put state {locals = Data.Map.empty:outer_locals, labels = Just Data.Map.empty} -- add an empty sub-scope
                 items' <- mapM resolveBlockItem items
-                put state {locals = outer_locals} -- add an empty sub-scope
+                state <- get
+                let labels_map = fromJust (labels state)
+                if any isMissingLabel (Data.Map.elems labels_map)
+                    then throwError $ "Some labels were declared but not defined: " ++ show (filter isMissingLabel (Data.Map.elems labels_map))
+                    else return ()  
+                put state {locals = outer_locals, labels = Nothing} -- pop the sub-scope
                 return (Function name items')
+            
+            isMissingLabel :: LabelState -> Bool
+            isMissingLabel (Missing _) = True
+            isMissingLabel _           = False
 
             resolveBlockItem :: BlockItem -> TransM BlockItem
             resolveBlockItem (Decl (VariableDeclaration name init)) = do
@@ -87,6 +148,15 @@ validate program =
                 thenStmt' <- resolveStatement thenStmt
                 maybeElseStmt' <- mapM resolveStatement maybeElseStmt
                 return (IfStatement cond' thenStmt' maybeElseStmt')
+            {- TODO: properly resolve labels, check that they are unique and defined, create a globally unique label
+             -}
+            resolveStatement (LabelledStatement (Label label) stmt) = do
+                stmt' <- resolveStatement stmt
+                label' <- resolveLabelDecl label
+                return (LabelledStatement (Label label') stmt')
+            resolveStatement (GotoStatement label) = do
+                label' <- resolveLabel label
+                return (GotoStatement label')
             resolveStatement NullStatement = return NullStatement
 
             resolveExpression :: Expression -> TransM Expression
@@ -105,10 +175,10 @@ validate program =
             resolveExpression (Unary PostIncrement (Variable var)) = do
                 expr' <- resolveExpression (Variable var)
                 return (Unary PostIncrement expr')
-            resolveExpression (Unary PreDecrement _) = do error "PreDecrement applied to non-variable."
-            resolveExpression (Unary PreIncrement _) = do error "PreIncrement applied to non-variable."
-            resolveExpression (Unary PostDecrement _) = do error "PostDecrement applied to non-variable."
-            resolveExpression (Unary PostIncrement _) = do error "PostIncrement applied to non-variable."
+            resolveExpression (Unary PreDecrement _) = throwError "PreDecrement applied to non-variable."
+            resolveExpression (Unary PreIncrement _) = throwError "PreIncrement applied to non-variable."
+            resolveExpression (Unary PostDecrement _) = throwError "PostDecrement applied to non-variable."
+            resolveExpression (Unary PostIncrement _) = throwError "PostIncrement applied to non-variable."
 
             resolveExpression (Unary op expr) = do
                 expr' <- resolveExpression expr
@@ -121,8 +191,8 @@ validate program =
                 left' <- resolveName left
                 right' <- resolveExpression right
                 return (Binary (CompoundAssignment op) (Variable left') right') 
-            resolveExpression (Binary Assignment _ _) = error "assign to non-variable."
-            resolveExpression (Binary (CompoundAssignment _) _ _) = error "assign to non-variable."
+            resolveExpression (Binary Assignment _ _) = throwError "assign to non-variable."
+            resolveExpression (Binary (CompoundAssignment _) _ _) = throwError "assign to non-variable."
             resolveExpression (Binary op left right) = do
                 left' <- resolveExpression left
                 right' <- resolveExpression right

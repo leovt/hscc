@@ -14,6 +14,7 @@ data Token
     | TokKeyInt
     | TokKeyVoid
     | TokKeyReturn
+    | TokKeyGoto
     | TokKeyIf
     | TokKeyElse
     | TokOpenParen  -- (
@@ -119,6 +120,7 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enum_src . add_eo
         map_keyword "int" = TokKeyInt
         map_keyword "void" = TokKeyVoid
         map_keyword "return" = TokKeyReturn
+        map_keyword "goto" = TokKeyGoto
         map_keyword "if" = TokKeyIf
         map_keyword "else" = TokKeyElse
         map_keyword ident = TokIdent ident
