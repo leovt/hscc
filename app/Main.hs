@@ -1,81 +1,71 @@
 module Main where
 
-import System.Environment (getArgs, getProgName)
-import System.FilePath (replaceExtension)
-import System.Exit (die, exitSuccess)
-import System.Process (readProcess, callProcess)
+import AsmAst (emitProgram, translateTACtoASM)
+import CLI (Options (..), getOptions)
 import Control.Monad (when)
-import Control.Exception (evaluate)
-import Control.DeepSeq (deepseq)
-
 import Lexer (lexer)
 import Parser (parser)
-import Validate (validate)
-import AsmAst (translateTACtoASM, emitProgram)
-import CLI(getOptions, Options(..))
+import System.Environment (getArgs, getProgName)
+import System.Exit (die, exitSuccess)
+import System.FilePath (replaceExtension)
+import System.Process (callProcess, readProcess)
 import TAC
+import Validate (validate)
 
 main :: IO ()
 main = do
-    prog <- getProgName
-    args <- getArgs
-    let fullCommand = unwords (prog : args)  -- combine program name + args into a single string
-    appendFile "hscc.log" (fullCommand ++ "\n")  -- append to the log file
-    
-    options <- getOptions
+  prog <- getProgName
+  args <- getArgs
+  let fullCommand = unwords (prog : args) -- combine program name + args into a single string
+  appendFile "hscc.log" (fullCommand ++ "\n") -- append to the log file
+  options <- getOptions
 
-    content <- readProcess "gcc" ["-E", "-P", inputFile options] ""
-    
-    tokens <- case lexer content of 
-        Left errormsg -> die errormsg
-        Right tokens -> return tokens
+  content <- readProcess "gcc" ["-E", "-P", inputFile options] ""
 
-    when (lexOnly options) $ do
-        mapM_ print tokens
-        exitSuccess
+  tokens <- case lexer content of
+    Left errormsg -> die errormsg
+    Right tokens -> return tokens
 
-    ast <- case parser tokens of
-        Left errormsg -> die errormsg
-        Right ast -> return ast
+  when (lexOnly options) $ do
+    mapM_ print tokens
+    exitSuccess
 
-    when (parseOnly options) $ do
-        print ast
-        exitSuccess
+  ast <- case parser tokens of
+    Left errormsg -> die errormsg
+    Right ast -> return ast
 
-    (validated_ast, nextID) <- case validate ast of
-        Left errormsg -> die errormsg
-        Right (ast, nextID) -> return (ast, nextID)
+  when (parseOnly options) $ do
+    print ast
+    exitSuccess
 
-    evaluate (show validated_ast `deepseq` ())
+  (validated_ast, nextID) <- case validate ast of
+    Left errormsg -> die errormsg
+    Right (ast, nextID) -> return (ast, nextID)
 
-    when (validateOnly options) $ do
-        print validated_ast
-        exitSuccess
+  when (validateOnly options) $ do
+    print validated_ast
+    exitSuccess
 
+  let tac = TAC.translate validated_ast nextID
 
+  when (tackyOnly options) $ do
+    print tac
+    exitSuccess
 
-    let tac = TAC.translate validated_ast nextID
+  let asmast = translateTACtoASM tac
 
-    when (tackyOnly options) $ do
-        print tac
-        exitSuccess
+  when (codegenOnly options) $ do
+    print asmast
+    exitSuccess
 
-    let asmast = translateTACtoASM tac
+  let output = unlines (emitProgram asmast)
 
-    when (codegenOnly options) $ do
-        print asmast
-        exitSuccess
+  let asmoutput = replaceExtension (inputFile options) ".s"
 
-    let output = unlines (emitProgram asmast)
-    evaluate (output `deepseq` ())
+  writeFile asmoutput output
 
-    let asmoutput = replaceExtension (inputFile options) ".s"
+  let executable = case outputFile options of
+        Just filename -> filename
+        Nothing -> replaceExtension (inputFile options) ""
 
-    writeFile asmoutput output
-
-    let executable = case outputFile options of
-            Just filename -> filename
-            Nothing -> replaceExtension (inputFile options) ""
-
-    callProcess "gcc" [asmoutput, "-o", executable]
-
+  callProcess "gcc" [asmoutput, "-o", executable]
