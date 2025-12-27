@@ -49,6 +49,7 @@ data Statement
   | IfStatement Expression Statement (Maybe Statement)
   | LabelledStatement Label Statement
   | GotoStatement String
+  | CompoundStatement Block
   | NullStatement
   deriving (Show)
 
@@ -225,6 +226,9 @@ parseStatement (TokKeyGoto : TokIdent labelName : tail) = do
   case tail of
     TokSemicolon : rest -> return (Just (GotoStatement labelName, rest))
     _ -> Left "expected ';' after 'goto label'"
+parseStatement (TokOpenBrace : tail) = do
+  (block, rest) <- parseBlock (TokOpenBrace : tail)
+  return (Just (CompoundStatement block, rest))
 parseStatement tokens = do
   (expr, rest) <- parseExpression tokens
   case rest of

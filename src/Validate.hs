@@ -165,6 +165,9 @@ validate program =
     resolveStatement (GotoStatement label) = do
       label' <- resolveLabel label
       return (GotoStatement label')
+    resolveStatement (CompoundStatement block) = do
+      block' <- resolveBlock block
+      return (CompoundStatement block')
     resolveStatement NullStatement = return NullStatement
 
     resolveExpression :: Expression -> TransM Expression

@@ -111,6 +111,7 @@ translate program nextID' = evalState (translateProgram program) initState
       return (Label labelName : stmt_instructions)
     translateStatement (P.GotoStatement labelName) = do
       return [Jump labelName]
+    translateStatement (P.CompoundStatement block) = translateBlock block
 
     translateExpression :: P.Expression -> TransM ([Instruction], Value)
     translateExpression (P.Constant c) = do
