@@ -5,6 +5,11 @@ import CLI (Options (..), getOptions)
 import Control.Monad (when)
 import Lexer (lexer)
 import Parser (parser)
+import PrettyASM ()
+import PrettyAst
+import PrettyTAC ()
+import Prettyprinter (defaultLayoutOptions, layoutPretty)
+import Prettyprinter.Render.String (renderString)
 import System.Environment (getArgs, getProgName)
 import System.Exit (die, exitSuccess)
 import System.FilePath (replaceExtension)
@@ -35,7 +40,8 @@ main = do
     Right ast -> return ast
 
   when (parseOnly options) $ do
-    print ast
+    let doc = pretty ast
+    putStrLn (renderString (layoutPretty defaultLayoutOptions doc))
     exitSuccess
 
   (validated_ast, nextID) <- case validate ast of
@@ -43,19 +49,22 @@ main = do
     Right (ast, nextID) -> return (ast, nextID)
 
   when (validateOnly options) $ do
-    print validated_ast
+    let doc = pretty validated_ast
+    putStrLn (renderString (layoutPretty defaultLayoutOptions doc))
     exitSuccess
 
   let tac = TAC.translate validated_ast nextID
 
   when (tackyOnly options) $ do
-    print tac
+    let doc = pretty tac
+    putStrLn (renderString (layoutPretty defaultLayoutOptions doc))
     exitSuccess
 
   let asmast = translateTACtoASM tac
 
   when (codegenOnly options) $ do
-    print asmast
+    let doc = pretty asmast
+    putStrLn (renderString (layoutPretty defaultLayoutOptions doc))
     exitSuccess
 
   let output = unlines (emitProgram asmast)

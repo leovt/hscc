@@ -1,6 +1,9 @@
 module AsmAst
   ( translateTACtoASM,
     emitProgram,
+    Program (..),
+    Function (..),
+    Instruction (..),
   )
 where
 
