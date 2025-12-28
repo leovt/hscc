@@ -1,5 +1,6 @@
 module Validate
   ( validate,
+    SwitchLabels (..),
   )
 where
 
@@ -28,10 +29,16 @@ data LabelState
   | Resolved String
   deriving (Show, Eq)
 
+data SwitchLabels
+  = Case Int
+  | Default
+  deriving (Show, Eq, Ord)
+
 data TransState = TransState
   { nextID :: Int,
     locals :: [Data.Map.Map String String],
     labels :: Maybe (Data.Map.Map String LabelState),
+    switchLabels :: [Data.Map.Map SwitchLabels ()],
     allowBreak :: Bool,
     allowContinue :: Bool
   }
@@ -106,7 +113,15 @@ validate program =
     (Left err, _) -> Left err
     (Right result, finalState) -> Right (result, nextID finalState)
   where
-    initState = TransState {nextID = 1001, locals = [], labels = Nothing, allowBreak = False, allowContinue = False}
+    initState =
+      TransState
+        { nextID = 1001,
+          locals = [],
+          labels = Nothing,
+          allowBreak = False,
+          allowContinue = False,
+          switchLabels = []
+        }
 
     resolveProgram :: Program -> TransM Program
     resolveProgram (Program fun) = do
@@ -165,6 +180,14 @@ validate program =
       stmt' <- resolveStatement stmt
       label' <- resolveLabelDecl label
       return (LabelledStatement (Label label') stmt')
+    resolveStatement (LabelledStatement (CaseLabel n) stmt) = do
+      checkSwitchLabels (Case n)
+      stmt' <- resolveStatement stmt
+      return (LabelledStatement (CaseLabel n) stmt')
+    resolveStatement (LabelledStatement DefaultLabel stmt) = do
+      checkSwitchLabels Default
+      stmt' <- resolveStatement stmt
+      return (LabelledStatement DefaultLabel stmt')
     resolveStatement (GotoStatement label) = do
       label' <- resolveLabel label
       return (GotoStatement label')
@@ -207,6 +230,30 @@ validate program =
       state <- get
       unless (allowContinue state) $ throwError "continue outside of loop"
       return ContinueStatement
+    resolveStatement (SwitchStatement expr stmt) = do
+      {-      let isCompoundStatement (CompoundStatement _) = True
+                isCompoundStatement _ = False
+            unless (isCompoundStatement stmt) $
+              throwError "switch statement body must be a compound statement" -}
+      expr' <- resolveExpression expr
+      state_before <- get
+      put state_before {switchLabels = Data.Map.empty : switchLabels state_before, allowBreak = True}
+      stmt' <- resolveStatement stmt
+      state_after <- get
+      put state_after {switchLabels = switchLabels state_before, allowBreak = allowBreak state_before}
+      return (SwitchStatement expr' stmt')
+
+    checkSwitchLabels :: SwitchLabels -> TransM ()
+    checkSwitchLabels label = do
+      state <- get
+      case switchLabels state of
+        [] -> throwError $ "not in a switch context: " ++ show label
+        (current : rest) -> case Data.Map.lookup label current of
+          Just _ -> throwError $ "duplicate label " ++ show label ++ " in switch context"
+          Nothing -> do
+            let current' = Data.Map.insert label () current
+            put state {switchLabels = current' : rest}
+            return ()
 
     withLoopContext :: TransM a -> TransM a
     withLoopContext action = do

@@ -8,11 +8,14 @@ module TAC
 where
 
 import Control.Monad.State
+import qualified Data.Map
+import Data.Maybe (fromJust)
 import Parser
   ( BinaryOperator,
     UnaryOperator,
   )
 import qualified Parser as P
+import Validate (SwitchLabels (..))
 
 {- HLINT ignore "Use newtype instead of data" -}
 data Program
@@ -41,8 +44,9 @@ data Value
 
 data TransState = TransState
   { nextID :: Int,
-    breakLabels :: [String],
-    continueLabels :: [String]
+    breakLabel :: Maybe String,
+    continueLabel :: Maybe String,
+    switchLabels :: Maybe (Data.Map.Map SwitchLabels String)
   }
 
 type TransM a = State TransState a -- the translation monad encapsulating the translation state
@@ -57,7 +61,13 @@ newId prefix = do
 translate :: P.Program -> Int -> Program
 translate program nextID' = evalState (translateProgram program) initState
   where
-    initState = TransState {nextID = nextID', breakLabels = [], continueLabels = []}
+    initState =
+      TransState
+        { nextID = nextID',
+          breakLabel = Nothing,
+          continueLabel = Nothing,
+          switchLabels = Nothing
+        }
 
     translateProgram :: P.Program -> TransM Program
     translateProgram (P.Program fun) = do
@@ -110,9 +120,6 @@ translate program nextID' = evalState (translateProgram program) initState
             ++ else_block
             ++ [Label end_label]
         )
-    translateStatement (P.LabelledStatement (P.Label labelName) stmt) = do
-      stmt_instructions <- translateStatement stmt
-      return (Label labelName : stmt_instructions)
     translateStatement (P.GotoStatement labelName) = do
       return [Jump labelName]
     translateStatement (P.CompoundStatement block) = translateBlock block
@@ -120,13 +127,11 @@ translate program nextID' = evalState (translateProgram program) initState
       begin_label <- newId "do.begin"
       continue_label <- newId "do.continue"
       break_label <- newId "do.break"
-      state <- get
-      let continue_labels = continue_label : continueLabels state
-      let break_labels = break_label : breakLabels state
-      put state {continueLabels = continue_labels, breakLabels = break_labels}
+      state_before <- get
+      put state_before {continueLabel = Just continue_label, breakLabel = Just break_label}
       stmt_instructions <- translateStatement stmt
-      state <- get
-      put state {continueLabels = tail continue_labels, breakLabels = tail break_labels}
+      state_after <- get
+      put state_after {continueLabel = continueLabel state_before, breakLabel = breakLabel state_before}
       (cond_instructions, cond_value) <- translateExpression cond
       return
         ( [Label begin_label]
@@ -139,13 +144,11 @@ translate program nextID' = evalState (translateProgram program) initState
       (cond_instructions, cond_value) <- translateExpression cond
       continue_label <- newId "while.continue"
       break_label <- newId "while.break"
-      state <- get
-      let continue_labels = continue_label : continueLabels state
-      let break_labels = break_label : breakLabels state
-      put state {continueLabels = continue_labels, breakLabels = break_labels}
+      state_before <- get
+      put state_before {continueLabel = Just continue_label, breakLabel = Just break_label}
       stmt_instructions <- translateStatement stmt
-      state <- get
-      put state {continueLabels = tail continue_labels, breakLabels = tail break_labels}
+      state_after <- get
+      put state_after {continueLabel = continueLabel state_before, breakLabel = breakLabel state_before}
       return
         ( [Label continue_label]
             ++ cond_instructions
@@ -176,13 +179,11 @@ translate program nextID' = evalState (translateProgram program) initState
         Just expr -> do
           (instr, _value) <- translateExpression expr
           return instr
-      state <- get
-      let continue_labels = continue_label : continueLabels state
-      let break_labels = break_label : breakLabels state
-      put state {continueLabels = continue_labels, breakLabels = break_labels}
+      state_before <- get
+      put state_before {continueLabel = Just continue_label, breakLabel = Just break_label}
       stmt_instructions <- translateStatement stmt
-      state <- get
-      put state {continueLabels = tail continue_labels, breakLabels = tail break_labels}
+      state_after <- get
+      put state_after {continueLabel = continueLabel state_before, breakLabel = breakLabel state_before}
       return
         ( init_instructions
             ++ [Label begin_label]
@@ -194,14 +195,68 @@ translate program nextID' = evalState (translateProgram program) initState
         )
     translateStatement P.BreakStatement = do
       state <- get
-      case breakLabels state of
-        (label : _) -> return [Jump label]
-        [] -> error "Break statement not within a loop."
+      case breakLabel state of
+        Just label -> return [Jump label]
+        Nothing -> error "Break statement not within a loop."
     translateStatement P.ContinueStatement = do
       state <- get
-      case continueLabels state of
-        (label : _) -> return [Jump label]
-        [] -> error "Continue statement not within a loop."
+      case continueLabel state of
+        Just label -> return [Jump label]
+        Nothing -> error "Continue statement not within a loop."
+    translateStatement (P.SwitchStatement expr stmt) = do
+      (cond_instructions, cond_value) <- translateExpression expr
+      break_label <- newId "switch.break"
+      state_before <- get
+      put state_before {breakLabel = Just break_label, switchLabels = Just Data.Map.empty}
+      stmt_instructions <- translateStatement stmt
+      state_after <- get
+      put state_after {breakLabel = breakLabel state_before, switchLabels = switchLabels state_before}
+      {-
+      for each (caseValue, labelName) in switchLabels state_after
+        add instruction: JumpIfEqual labelName cond_value caseValue
+      -}
+      let switchLabelsMap :: Data.Map.Map SwitchLabels String
+          switchLabelsMap = fromJust (switchLabels state_after)
+          case_jump :: (SwitchLabels, String) -> TransM [Instruction]
+          case_jump (Default, _) = return []
+          case_jump (Case n, jump_target) = do
+            varid <- newId "tmp"
+            let destination = Variable varid
+            return
+              [ Binary P.Equal cond_value (Constant n) destination,
+                JumpIfNotZero jump_target destination
+              ]
+      case_jumps_list <- mapM case_jump (Data.Map.toList switchLabelsMap)
+      let case_jumps = concat case_jumps_list
+          default_jump = case Data.Map.lookup Default switchLabelsMap of
+            Just label -> [Jump label]
+            Nothing -> [Jump break_label]
+      return
+        ( cond_instructions
+            ++ case_jumps
+            ++ default_jump
+            ++ stmt_instructions
+            ++ [Label break_label]
+        )
+    translateStatement (P.LabelledStatement (P.Label labelName) stmt) = do
+      stmt_instructions <- translateStatement stmt
+      return (Label labelName : stmt_instructions)
+    translateStatement (P.LabelledStatement (P.CaseLabel value) stmt) = do
+      label <- newId $ "switch.case" ++ show value
+      stmt_instructions <- translateStatement stmt
+      state <- get
+      let switchLabelsMap = fromJust (switchLabels state)
+          switchLabelsMap' = Data.Map.insert (Case value) label switchLabelsMap
+      put state {switchLabels = Just switchLabelsMap'}
+      return (Label label : stmt_instructions)
+    translateStatement (P.LabelledStatement P.DefaultLabel stmt) = do
+      label <- newId "switch.default"
+      stmt_instructions <- translateStatement stmt
+      state <- get
+      let switchLabelsMap = fromJust (switchLabels state)
+          switchLabelsMap' = Data.Map.insert Default label switchLabelsMap
+      put state {switchLabels = Just switchLabelsMap'}
+      return (Label label : stmt_instructions)
 
     translateExpression :: P.Expression -> TransM ([Instruction], Value)
     translateExpression (P.Constant c) = do

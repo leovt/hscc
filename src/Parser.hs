@@ -47,6 +47,8 @@ data Declaration
 
 data Label
   = Label String
+  | CaseLabel Int
+  | DefaultLabel
   deriving (Show)
 
 data Statement
@@ -61,6 +63,7 @@ data Statement
   | WhileStatement Expression Statement
   | DoWhileStatement Expression Statement
   | ForStatement (Maybe ForInitializer) (Maybe Expression) (Maybe Expression) Statement
+  | SwitchStatement Expression Statement
   | NullStatement
   deriving (Show)
 
@@ -233,6 +236,19 @@ parseStatement (TokIdent labelName : TokColon : tail) = do
   case suite of
     Nothing -> Left "expected statement after label"
     Just (stmt, rest) -> return (Just (LabelledStatement label stmt, rest))
+parseStatement (TokKeyDefault : TokColon : tail) = do
+  suite <- parseStatement tail
+  case suite of
+    Nothing -> Left "expected statement after default label"
+    Just (stmt, rest) -> return (Just (LabelledStatement DefaultLabel stmt, rest))
+parseStatement (TokKeyDefault : _) = Left "expected ':' after default"
+parseStatement (TokKeyCase : TokInt n : TokColon : tail) = do
+  let label = CaseLabel n
+  suite <- parseStatement tail
+  case suite of
+    Nothing -> Left "expected statement after case label"
+    Just (stmt, rest) -> return (Just (LabelledStatement label stmt, rest))
+parseStatement (TokKeyCase : _) = Left "expected integer and ':' after case"
 parseStatement (TokKeyGoto : TokIdent labelName : tail) = do
   case tail of
     TokSemicolon : rest -> return (Just (GotoStatement labelName, rest))
@@ -307,6 +323,16 @@ parseStatement (TokKeyFor : TokOpenParen : tail) = do
     Nothing -> Left "expected statement after for loop"
     Just (stmt, rest''') -> return (Just (ForStatement maybeInit maybeCond maybeInc stmt, rest'''))
 parseStatement (TokKeyFor : _) = Left "expect ( after for"
+parseStatement (TokKeySwitch : TokOpenParen : tail) = do
+  (expr, rest) <- parseExpression tail
+  case rest of
+    TokCloseParen : rest' -> do
+      suite <- parseStatement rest'
+      case suite of
+        Nothing -> Left "expected statement after switch condition"
+        Just (stmt, rest'') -> return (Just (SwitchStatement expr stmt, rest''))
+    _ -> Left "expected ')' after switch condition"
+parseStatement (TokKeySwitch : _) = Left "expect ( after switch"
 parseStatement tokens = do
   (expr, rest) <- parseExpression tokens
   case rest of

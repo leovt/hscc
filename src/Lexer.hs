@@ -10,8 +10,8 @@ where
 import Data.List (mapAccumL)
 
 data Token
-  = TokInt Int -- integer literal
-  | TokIdent String -- identifier
+  = TokInt Int
+  | TokIdent String
   | TokKeyInt
   | TokKeyVoid
   | TokKeyReturn
@@ -21,21 +21,24 @@ data Token
   | TokKeyDo
   | TokKeyBreak
   | TokKeyContinue
+  | TokKeySwitch
+  | TokKeyCase
+  | TokKeyDefault
   | TokKeyIf
   | TokKeyElse
-  | TokOpenParen -- (
-  | TokCloseParen -- )
-  | TokOpenBrace -- {
-  | TokCloseBrace -- }
-  | TokSemicolon -- ;
-  | TokTilde -- ~
-  | TokMinus -- -
-  | TokDblMinus -- --
-  | TokPlus -- +
-  | TokDblPlus -- ++
+  | TokOpenParen
+  | TokCloseParen
+  | TokOpenBrace
+  | TokCloseBrace
+  | TokSemicolon
+  | TokTilde
+  | TokMinus
+  | TokDblMinus
+  | TokPlus
+  | TokDblPlus
   | TokAsterisk
-  | TokSlash -- /
-  | TokPercent -- %
+  | TokSlash
+  | TokPercent
   | TokAmpersand
   | TokPipe
   | TokCircumflex
@@ -51,19 +54,18 @@ data Token
   | TokDblEqual
   | TokLessEqual
   | TokGreaterEqual
-  | TokPlusEqual -- +=
-  | TokMinusEqual -- -=
+  | TokPlusEqual
+  | TokMinusEqual
   | TokAsteriskEqual
-  | -- \*=
-    TokSlashEqual
-  | TokPercentEqual -- %=
+  | TokSlashEqual
+  | TokPercentEqual
   | TokAmpersandEqual
   | TokPipeEqual
   | TokCircumflexEqual
   | TokDblLessEqual
   | TokDblGreaterEqual
-  | TokQuestion -- ?
-  | TokColon -- :
+  | TokQuestion
+  | TokColon
   deriving (Show, Eq)
 
 data Position = Position {line :: Int, column :: Int}
@@ -135,6 +137,9 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
     map_keyword "do" = TokKeyDo
     map_keyword "break" = TokKeyBreak
     map_keyword "continue" = TokKeyContinue
+    map_keyword "switch" = TokKeySwitch
+    map_keyword "case" = TokKeyCase
+    map_keyword "default" = TokKeyDefault
     map_keyword "if" = TokKeyIf
     map_keyword "else" = TokKeyElse
     map_keyword ident = TokIdent ident
