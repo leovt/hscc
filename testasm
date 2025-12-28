@@ -1,0 +1,4 @@
+cabal build
+./hscc $1.c
+cat $1.c
+cat $1.s
