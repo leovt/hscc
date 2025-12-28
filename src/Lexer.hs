@@ -16,6 +16,11 @@ data Token
   | TokKeyVoid
   | TokKeyReturn
   | TokKeyGoto
+  | TokKeyFor
+  | TokKeyWhile
+  | TokKeyDo
+  | TokKeyBreak
+  | TokKeyContinue
   | TokKeyIf
   | TokKeyElse
   | TokOpenParen -- (
@@ -125,6 +130,11 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
     map_keyword "void" = TokKeyVoid
     map_keyword "return" = TokKeyReturn
     map_keyword "goto" = TokKeyGoto
+    map_keyword "for" = TokKeyFor
+    map_keyword "while" = TokKeyWhile
+    map_keyword "do" = TokKeyDo
+    map_keyword "break" = TokKeyBreak
+    map_keyword "continue" = TokKeyContinue
     map_keyword "if" = TokKeyIf
     map_keyword "else" = TokKeyElse
     map_keyword ident = TokIdent ident

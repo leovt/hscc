@@ -3,7 +3,7 @@ module Validate
   )
 where
 
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Control.Monad.Except
 import Control.Monad.State
 import qualified Data.Map
@@ -14,6 +14,7 @@ import Parser
     BlockItem (..),
     Declaration (..),
     Expression (..),
+    ForInitializer (..),
     Function (..),
     Label (..),
     Program (..),
@@ -30,7 +31,9 @@ data LabelState
 data TransState = TransState
   { nextID :: Int,
     locals :: [Data.Map.Map String String],
-    labels :: Maybe (Data.Map.Map String LabelState)
+    labels :: Maybe (Data.Map.Map String LabelState),
+    allowBreak :: Bool,
+    allowContinue :: Bool
   }
 
 type TransM a = ExceptT String (State TransState) a -- the translation monad encapsulating the translation state
@@ -103,7 +106,7 @@ validate program =
     (Left err, _) -> Left err
     (Right result, finalState) -> Right (result, nextID finalState)
   where
-    initState = TransState {nextID = 1001, locals = [], labels = Nothing}
+    initState = TransState {nextID = 1001, locals = [], labels = Nothing, allowBreak = False, allowContinue = False}
 
     resolveProgram :: Program -> TransM Program
     resolveProgram (Program fun) = do
@@ -169,6 +172,50 @@ validate program =
       block' <- resolveBlock block
       return (CompoundStatement block')
     resolveStatement NullStatement = return NullStatement
+    resolveStatement (WhileStatement cond stmt) = do
+      cond' <- resolveExpression cond
+      stmt' <- withLoopContext (resolveStatement stmt)
+      return (WhileStatement cond' stmt')
+    resolveStatement (DoWhileStatement cond stmt) = do
+      cond' <- resolveExpression cond
+      stmt' <- withLoopContext (resolveStatement stmt)
+      return (DoWhileStatement cond' stmt')
+    resolveStatement (ForStatement maybeInit maybeCond maybeInc stmt) = do
+      state <- get
+      let outer_locals = locals state
+      put state {locals = Data.Map.empty : outer_locals} -- add an empty sub-scope
+      maybeInit' <- case maybeInit of
+        Nothing -> return Nothing
+        Just (ForInitExpr expr) -> do
+          expr' <- resolveExpression expr
+          return (Just (ForInitExpr expr'))
+        Just (ForInitDecl (VariableDeclaration name init)) -> do
+          name' <- resolveNameDecl name
+          init' <- mapM resolveExpression init
+          return (Just (ForInitDecl (VariableDeclaration name' init')))
+      maybeCond' <- mapM resolveExpression maybeCond
+      maybeInc' <- mapM resolveExpression maybeInc
+      stmt' <- withLoopContext (resolveStatement stmt)
+      state <- get
+      put state {locals = outer_locals} -- pop the sub-scope
+      return (ForStatement maybeInit' maybeCond' maybeInc' stmt')
+    resolveStatement BreakStatement = do
+      state <- get
+      unless (allowBreak state) $ throwError "break outside of loop"
+      return BreakStatement
+    resolveStatement ContinueStatement = do
+      state <- get
+      unless (allowContinue state) $ throwError "continue outside of loop"
+      return ContinueStatement
+
+    withLoopContext :: TransM a -> TransM a
+    withLoopContext action = do
+      state_before <- get
+      put state_before {allowBreak = True, allowContinue = True}
+      result <- action
+      state_after <- get
+      put state_after {allowBreak = allowBreak state_before, allowContinue = allowContinue state_before}
+      return result
 
     resolveExpression :: Expression -> TransM Expression
     resolveExpression (Variable name) = do

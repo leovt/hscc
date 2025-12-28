@@ -39,7 +39,11 @@ data Value
   | Variable String
   deriving (Show)
 
-data TransState = TransState {nextID :: Int}
+data TransState = TransState
+  { nextID :: Int,
+    breakLabels :: [String],
+    continueLabels :: [String]
+  }
 
 type TransM a = State TransState a -- the translation monad encapsulating the translation state
 
@@ -47,13 +51,13 @@ newId :: String -> TransM String
 newId prefix = do
   state <- get
   let n = nextID state
-  put TransState {nextID = n + 1}
+  put state {nextID = n + 1}
   return $ prefix ++ "." ++ show n
 
 translate :: P.Program -> Int -> Program
 translate program nextID' = evalState (translateProgram program) initState
   where
-    initState = TransState {nextID = nextID'}
+    initState = TransState {nextID = nextID', breakLabels = [], continueLabels = []}
 
     translateProgram :: P.Program -> TransM Program
     translateProgram (P.Program fun) = do
@@ -112,6 +116,92 @@ translate program nextID' = evalState (translateProgram program) initState
     translateStatement (P.GotoStatement labelName) = do
       return [Jump labelName]
     translateStatement (P.CompoundStatement block) = translateBlock block
+    translateStatement (P.DoWhileStatement cond stmt) = do
+      begin_label <- newId "do.begin"
+      continue_label <- newId "do.continue"
+      break_label <- newId "do.break"
+      state <- get
+      let continue_labels = continue_label : continueLabels state
+      let break_labels = break_label : breakLabels state
+      put state {continueLabels = continue_labels, breakLabels = break_labels}
+      stmt_instructions <- translateStatement stmt
+      state <- get
+      put state {continueLabels = tail continue_labels, breakLabels = tail break_labels}
+      (cond_instructions, cond_value) <- translateExpression cond
+      return
+        ( [Label begin_label]
+            ++ stmt_instructions
+            ++ [Label continue_label]
+            ++ cond_instructions
+            ++ [JumpIfNotZero begin_label cond_value, Label break_label]
+        )
+    translateStatement (P.WhileStatement cond stmt) = do
+      (cond_instructions, cond_value) <- translateExpression cond
+      continue_label <- newId "while.continue"
+      break_label <- newId "while.break"
+      state <- get
+      let continue_labels = continue_label : continueLabels state
+      let break_labels = break_label : breakLabels state
+      put state {continueLabels = continue_labels, breakLabels = break_labels}
+      stmt_instructions <- translateStatement stmt
+      state <- get
+      put state {continueLabels = tail continue_labels, breakLabels = tail break_labels}
+      return
+        ( [Label continue_label]
+            ++ cond_instructions
+            ++ [JumpIfZero break_label cond_value]
+            ++ stmt_instructions
+            ++ [Jump continue_label, Label break_label]
+        )
+    translateStatement (P.ForStatement maybeInit maybeCond maybeInc stmt) = do
+      begin_label <- newId "for.begin"
+      continue_label <- newId "for.continue"
+      break_label <- newId "for.break"
+      init_instructions <- case maybeInit of
+        Nothing -> return []
+        Just (P.ForInitExpr expr) -> do
+          (instr, _value) <- translateExpression expr
+          return instr
+        Just (P.ForInitDecl (P.VariableDeclaration name (Just expr))) -> do
+          (instr, _value) <- translateExpression (P.Binary P.Assignment (P.Variable name) expr)
+          return instr
+        Just (P.ForInitDecl _) -> return []
+      cond_instructions <- case maybeCond of
+        Nothing -> return []
+        Just expr -> do
+          (instr, value) <- translateExpression expr
+          return (instr ++ [JumpIfZero break_label value])
+      inc_instructions <- case maybeInc of
+        Nothing -> return []
+        Just expr -> do
+          (instr, _value) <- translateExpression expr
+          return instr
+      state <- get
+      let continue_labels = continue_label : continueLabels state
+      let break_labels = break_label : breakLabels state
+      put state {continueLabels = continue_labels, breakLabels = break_labels}
+      stmt_instructions <- translateStatement stmt
+      state <- get
+      put state {continueLabels = tail continue_labels, breakLabels = tail break_labels}
+      return
+        ( init_instructions
+            ++ [Label begin_label]
+            ++ cond_instructions
+            ++ stmt_instructions
+            ++ [Label continue_label]
+            ++ inc_instructions
+            ++ [Jump begin_label, Label break_label]
+        )
+    translateStatement P.BreakStatement = do
+      state <- get
+      case breakLabels state of
+        (label : _) -> return [Jump label]
+        [] -> error "Break statement not within a loop."
+    translateStatement P.ContinueStatement = do
+      state <- get
+      case continueLabels state of
+        (label : _) -> return [Jump label]
+        [] -> error "Continue statement not within a loop."
 
     translateExpression :: P.Expression -> TransM ([Instruction], Value)
     translateExpression (P.Constant c) = do

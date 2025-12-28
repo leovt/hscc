@@ -10,6 +10,7 @@ module Parser
     UnaryOperator (..),
     BinaryOperator (..),
     Label (..),
+    ForInitializer (..),
   )
 where
 
@@ -32,6 +33,11 @@ data BlockItem
   | Decl Declaration
   deriving (Show)
 
+data ForInitializer
+  = ForInitDecl Declaration
+  | ForInitExpr Expression
+  deriving (Show)
+
 newtype Block = Block [BlockItem]
   deriving (Show)
 
@@ -50,6 +56,11 @@ data Statement
   | LabelledStatement Label Statement
   | GotoStatement String
   | CompoundStatement Block
+  | BreakStatement
+  | ContinueStatement
+  | WhileStatement Expression Statement
+  | DoWhileStatement Expression Statement
+  | ForStatement (Maybe ForInitializer) (Maybe Expression) (Maybe Expression) Statement
   | NullStatement
   deriving (Show)
 
@@ -229,6 +240,73 @@ parseStatement (TokKeyGoto : TokIdent labelName : tail) = do
 parseStatement (TokOpenBrace : tail) = do
   (block, rest) <- parseBlock (TokOpenBrace : tail)
   return (Just (CompoundStatement block, rest))
+parseStatement (TokKeyBreak : tail) = do
+  case tail of
+    TokSemicolon : rest -> return (Just (BreakStatement, rest))
+    _ -> Left "expected ';' after 'break'"
+parseStatement (TokKeyContinue : tail) = do
+  case tail of
+    TokSemicolon : rest -> return (Just (ContinueStatement, rest))
+    _ -> Left "expected ';' after 'continue'"
+parseStatement (TokKeyWhile : TokOpenParen : tail) = do
+  (expr, rest) <- parseExpression tail
+  case rest of
+    TokCloseParen : rest' -> do
+      suite <- parseStatement rest'
+      case suite of
+        Nothing -> Left "expected statement after while condition"
+        Just (stmt, rest'') -> return (Just (WhileStatement expr stmt, rest''))
+    _ -> Left "expected ')' after while condition"
+parseStatement (TokKeyWhile : _) = Left "expect ( after while"
+parseStatement (TokKeyDo : tail) = do
+  suite <- parseStatement tail
+  case suite of
+    Nothing -> Left "expected statement after do"
+    Just (stmt, TokKeyWhile : TokOpenParen : rest) -> do
+      (expr, rest') <- parseExpression rest
+      case rest' of
+        TokCloseParen : rest'' -> case rest'' of
+          TokSemicolon : rest''' -> return (Just (DoWhileStatement expr stmt, rest'''))
+          _ -> Left "expected ';' after do-while"
+        _ -> Left "expected ')' after do-while condition"
+    _ -> Left "expected 'while (' after do statement"
+parseStatement (TokKeyFor : TokOpenParen : tail) = do
+  -- parse initializer
+  let parseInitializer :: [Token] -> Either String (Maybe ForInitializer, [Token])
+      parseInitializer (TokSemicolon : tail) = return (Nothing, tail)
+      parseInitializer tokens = do
+        decl <- parseDeclaration tokens
+        case decl of
+          Just (d, rest) -> return (Just (ForInitDecl d), rest)
+          Nothing -> do
+            (expr, rest) <- parseExpression tokens
+            case rest of
+              TokSemicolon : rest' -> return (Just (ForInitExpr expr), rest')
+              _ -> Left "expected ';' after for loop initializer"
+  -- parse condition
+  let parseCondition :: [Token] -> Either String (Maybe Expression, [Token])
+      parseCondition (TokSemicolon : tail) = return (Nothing, tail)
+      parseCondition tokens = do
+        (expr, rest') <- parseExpression tokens
+        case rest' of
+          TokSemicolon : rest'' -> return (Just expr, rest'')
+          _ -> Left "expected ';' after for loop condition"
+  -- parse increment
+  let parseIncrement :: [Token] -> Either String (Maybe Expression, [Token])
+      parseIncrement (TokCloseParen : tail) = return (Nothing, tail)
+      parseIncrement tokens = do
+        (expr, rest') <- parseExpression tokens
+        case rest' of
+          TokCloseParen : rest'' -> return (Just expr, rest'')
+          _ -> Left "expected ')' after for loop increment"
+  (maybeInit, rest) <- parseInitializer tail
+  (maybeCond, rest') <- parseCondition rest
+  (maybeInc, rest'') <- parseIncrement rest'
+  suite <- parseStatement rest''
+  case suite of
+    Nothing -> Left "expected statement after for loop"
+    Just (stmt, rest''') -> return (Just (ForStatement maybeInit maybeCond maybeInc stmt, rest'''))
+parseStatement (TokKeyFor : _) = Left "expect ( after for"
 parseStatement tokens = do
   (expr, rest) <- parseExpression tokens
   case rest of
