@@ -46,7 +46,7 @@ main = do
 
   (validated_ast, nextID) <- case validate ast of
     Left errormsg -> die errormsg
-    Right (ast, nextID) -> return (ast, nextID)
+    Right (ast, nextID, _) -> return (ast, nextID)
 
   when (validateOnly options) $ do
     let doc = pretty validated_ast

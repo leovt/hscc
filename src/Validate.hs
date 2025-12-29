@@ -107,8 +107,21 @@ resolveLabel name = do
         put state {nextID = n + 1, labels = Just labels_map'}
         return name'
 
-validate :: Program -> Either String (Program, Int)
-validate program =
+newtype SymbolTable = SymbolTable ()
+
+validate :: Program -> Either String (Program, Int, SymbolTable)
+validate program = do
+  (resolved_program, nextID) <- resolve program
+  (checked_program, symbolTable) <- typecheck resolved_program
+  return (checked_program, nextID, symbolTable)
+
+typecheck :: Program -> Either String (Program, SymbolTable)
+typecheck program = do
+  -- currently a no-op
+  return (program, SymbolTable ())
+
+resolve :: Program -> Either String (Program, Int)
+resolve program =
   case runState (runExceptT (resolveProgram program)) initState of
     (Left err, _) -> Left err
     (Right result, finalState) -> Right (result, nextID finalState)
