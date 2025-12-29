@@ -49,7 +49,7 @@ resolveNameDecl :: String -> TransM String
 resolveNameDecl name = do
   state <- get
   case locals state of
-    [] -> throwError "not in a context"
+    [] -> throwError $ "resolveNameDecl: not in a context (`" ++ name ++ "`)"
     (inner : rest) -> case Data.Map.lookup name inner of
       Just _ -> throwError $ "Duplicate declaration of " ++ name
       Nothing -> do
@@ -64,7 +64,7 @@ resolveName name = do
   state <- get
   case lookupName (locals state) of
     Just name' -> return name'
-    Nothing -> throwError $ "not in a context for lookup of `" ++ name ++ "`"
+    Nothing -> throwError $ "resolveName: not in a context for lookup of `" ++ name ++ "`"
   where
     lookupName [] = Nothing
     lookupName (scope : rest) = case Data.Map.lookup name scope of
@@ -144,26 +144,31 @@ resolve program =
     resolveFunction :: Function -> TransM Function
     resolveFunction (Function name params (Just body)) = do
       state <- get
-      put state {labels = Just Data.Map.empty}
-      body' <- resolveBlock body
+      let outer_names = locals state
+      put state {labels = Just Data.Map.empty, locals = Data.Map.empty : outer_names} -- new scope for function locals
+      params' <- mapM resolveNameDecl params
+      body' <- resolveBlock body False
       state <- get
       let labels_map = fromJust (labels state)
       when (any isMissingLabel (Data.Map.elems labels_map)) $
         throwError $
           "Some labels were declared but not defined: " ++ show (filter isMissingLabel (Data.Map.elems labels_map))
-      put state {labels = Nothing}
-      return (Function name params {- todo handle params -} (Just body'))
+      put state {labels = Nothing, locals = outer_names} -- pop function scope
+      return (Function name params' (Just body'))
     resolveFunction (Function _ _ Nothing) = throwError "Function body is missing."
 
     isMissingLabel :: LabelState -> Bool
     isMissingLabel (Missing _) = True
     isMissingLabel _ = False
 
-    resolveBlock :: Block -> TransM Block
-    resolveBlock (Block items) = do
+    resolveBlock :: Block -> Bool -> TransM Block
+    resolveBlock (Block items) addScope = do
       state <- get
       let outer_locals = locals state
-      put state {locals = Data.Map.empty : outer_locals} -- add an empty sub-scope
+          inner_locals = case addScope of
+            False -> outer_locals
+            True -> Data.Map.empty : outer_locals
+      put state {locals = inner_locals} -- add an empty sub-scope
       items' <- mapM resolveBlockItem items
       state <- get
       put state {locals = outer_locals} -- pop the sub-scope
@@ -208,7 +213,7 @@ resolve program =
       label' <- resolveLabel label
       return (GotoStatement label')
     resolveStatement (CompoundStatement block) = do
-      block' <- resolveBlock block
+      block' <- resolveBlock block True
       return (CompoundStatement block')
     resolveStatement NullStatement = return NullStatement
     resolveStatement (WhileStatement cond stmt) = do
