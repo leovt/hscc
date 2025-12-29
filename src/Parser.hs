@@ -21,11 +21,11 @@ parser loctokens = parseProgram (map fst loctokens)
 
 {- HLINT ignore "Use newtype instead of data" -}
 data Program
-  = Program Function
+  = Program [Function]
   deriving (Show)
 
 data Function
-  = Function String Block
+  = Function String [String] (Maybe Block)
   deriving (Show)
 
 data BlockItem
@@ -43,6 +43,7 @@ newtype Block = Block [BlockItem]
 
 data Declaration
   = VariableDeclaration String (Maybe Expression)
+  | FunctionDeclaration Function
   deriving (Show)
 
 data Label
@@ -73,6 +74,7 @@ data Expression
   | Unary UnaryOperator Expression
   | Binary BinaryOperator Expression Expression
   | Conditional Expression Expression Expression
+  | FunctionCall String [Expression]
   deriving (Show)
 
 data UnaryOperator
@@ -169,17 +171,32 @@ associativity op = case op of
   _other -> 1 -- left_associative
 
 parseProgram :: [Token] -> Either String Program
-parseProgram tokens = do
-  (fun, rest) <- parseFunction tokens
-  case rest of
-    [] -> return (Program fun)
-    _ -> Left "unexpected tokens after function"
+parseProgram tokens = parseProgramSeq tokens []
+  where
+    parseProgramSeq :: [Token] -> [Function] -> Either String Program
+    parseProgramSeq [] acc = Right (Program (reverse acc))
+    parseProgramSeq tokens acc = do
+      suite <- parseFunction tokens
+      case suite of
+        Nothing -> Left "expected function"
+        Just (fun, rest) -> parseProgramSeq rest (fun : acc)
 
-parseFunction :: [Token] -> Either String (Function, [Token])
-parseFunction (TokKeyInt : TokIdent name : TokOpenParen : TokKeyVoid : TokCloseParen : tail) = do
-  (block, rest) <- parseBlock tail
-  return (Function name block, rest)
-parseFunction _ = Left "expected function"
+parseFunction :: [Token] -> Either String (Maybe (Function, [Token]))
+parseFunction (TokKeyInt : TokIdent name : TokOpenParen : tail) = do
+  let parse_params :: [String] -> [Token] -> Either String ([String], [Token])
+      parse_params [] (TokKeyVoid : TokCloseParen : rest) = return ([], rest)
+      parse_params [] (TokCloseParen : rest) = return ([], rest)
+      parse_params params (TokKeyInt : TokIdent paramName : TokCloseParen : rest) = return (params ++ [paramName], rest)
+      parse_params params (TokKeyInt : TokIdent paramName : TokComma : rest) = parse_params (params ++ [paramName]) rest
+      parse_params _ _ = Left "expected parameter or ')'"
+  (params, rest) <- parse_params [] tail
+  case rest of
+    TokOpenBrace : rest' -> do
+      (block, rest'') <- parseBlock (TokOpenBrace : rest')
+      return (Just (Function name params (Just block), rest''))
+    TokSemicolon : rest -> return (Just (Function name params Nothing, rest))
+    _ -> Left "expected function body or ';' after function declaration"
+parseFunction _ = return Nothing
 
 parseBlock :: [Token] -> Either String (Block, [Token])
 parseBlock (TokOpenBrace : tokens) = do
@@ -195,14 +212,18 @@ parseBlockitems tokens = parse_blockitems_seq ([], tokens)
     parse_blockitems_seq :: ([BlockItem], [Token]) -> Either String ([BlockItem], [Token])
     parse_blockitems_seq (items, TokCloseBrace : tokens) = Right (items, TokCloseBrace : tokens)
     parse_blockitems_seq (items, tokens) = do
-      suite <- parseDeclaration tokens
+      suite <- parseVariableDeclaration tokens
       case suite of
         Just (decl, rest) -> parse_blockitems_seq (items ++ [Decl decl], rest)
         Nothing -> do
-          suite' <- parseStatement tokens
+          suite' <- parseFunction tokens
           case suite' of
-            Just (stmt, rest) -> parse_blockitems_seq (items ++ [Stmt stmt], rest)
-            Nothing -> Left $ "expected block item " ++ show tokens ++ "\n" ++ show (parseStatement tokens)
+            Just (fun, rest) -> parse_blockitems_seq (items ++ [Decl (FunctionDeclaration fun)], rest)
+            Nothing -> do
+              suite'' <- parseStatement tokens
+              case suite'' of
+                Just (stmt, rest) -> parse_blockitems_seq (items ++ [Stmt stmt], rest)
+                Nothing -> Left $ "expected block item " ++ show tokens ++ "\n" ++ show (parseStatement tokens)
 
 parseStatement :: [Token] -> Either String (Maybe (Statement, [Token]))
 parseStatement (TokKeyReturn : tail) = do
@@ -291,7 +312,7 @@ parseStatement (TokKeyFor : TokOpenParen : tail) = do
   let parseInitializer :: [Token] -> Either String (Maybe ForInitializer, [Token])
       parseInitializer (TokSemicolon : tail) = return (Nothing, tail)
       parseInitializer tokens = do
-        decl <- parseDeclaration tokens
+        decl <- parseVariableDeclaration tokens
         case decl of
           Just (d, rest) -> return (Just (ForInitDecl d), rest)
           Nothing -> do
@@ -339,16 +360,17 @@ parseStatement tokens = do
     TokSemicolon : rest' -> return (Just (ExpressionStatement expr, rest'))
     _ -> Left "expected ';' after expression statement"
 
-parseDeclaration :: [Token] -> Either String (Maybe (Declaration, [Token]))
-parseDeclaration (TokKeyInt : (TokIdent name) : tokens) = case tokens of
+parseVariableDeclaration :: [Token] -> Either String (Maybe (Declaration, [Token]))
+parseVariableDeclaration (TokKeyInt : (TokIdent name) : tokens) = case tokens of
   (TokEqual : rest) -> do
     (expr, rest') <- parseExpression rest
     case rest' of
       TokSemicolon : rest'' -> return (Just (VariableDeclaration name (Just expr), rest''))
       _ -> Left "expected ';' after variable declaration"
   (TokSemicolon : rest) -> return (Just (VariableDeclaration name Nothing, rest))
+  (TokOpenParen : _) -> return Nothing
   _ -> Left "expected ';' or '=' after variable declaration"
-parseDeclaration _ = Right Nothing
+parseVariableDeclaration _ = Right Nothing
 
 parseFactor :: [Token] -> Either String (Expression, [Token])
 parseFactor tokens = do
@@ -362,6 +384,17 @@ parseFactor tokens = do
 
 parseFactorPrefix :: [Token] -> Either String (Expression, [Token])
 parseFactorPrefix ((TokInt n) : tail) = return (Constant n, tail)
+parseFactorPrefix ((TokIdent n) : TokOpenParen : tail) = do
+  let parse_arguments :: [Expression] -> [Token] -> Either String ([Expression], [Token])
+      parse_arguments [] (TokCloseParen : rest) = return ([], rest)
+      parse_arguments args tokens = do
+        (expr, rest) <- parseExpression tokens
+        case rest of
+          TokComma : rest' -> parse_arguments (args ++ [expr]) rest'
+          TokCloseParen : rest' -> return (args ++ [expr], rest')
+          _ -> Left "expected ',' or ')' in function call arguments"
+  (args, rest) <- parse_arguments [] tail
+  return (FunctionCall n args, rest)
 parseFactorPrefix ((TokIdent n) : tail) = return (Variable n, tail)
 parseFactorPrefix (TokMinus : tail) = do
   (expr, rest) <- parseFactor tail

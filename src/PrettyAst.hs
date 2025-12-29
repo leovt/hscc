@@ -8,14 +8,17 @@ module PrettyAst
 where
 
 import Parser
+import Data.List (intercalate)
 import Prettyprinter (Doc, Pretty (pretty), hardline, nest, parens, pretty, vsep, (<+>), (<>))
 
 instance Pretty Program where
   pretty (Program f) = pretty f
 
 instance Pretty Function where
-  pretty (Function name block) =
-    pretty "Function" <+> pretty name <+> pretty block
+  pretty (Function name params (Just block)) =
+    pretty "Function" <+> pretty name <+> parens (pretty (intercalate ", " params)) <+> pretty block
+  pretty (Function name params Nothing) =
+    pretty "Function" <+> pretty name <+> parens (pretty (intercalate ", " params))
 
 instance Pretty BlockItem where
   pretty (Stmt stmt) = pretty stmt

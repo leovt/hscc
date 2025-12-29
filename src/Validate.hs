@@ -124,12 +124,12 @@ validate program =
         }
 
     resolveProgram :: Program -> TransM Program
-    resolveProgram (Program fun) = do
-      fun' <- resolveFunction fun
-      return (Program fun')
+    resolveProgram (Program functions) = do
+      functions' <- mapM resolveFunction functions
+      return (Program functions')
 
     resolveFunction :: Function -> TransM Function
-    resolveFunction (Function name body) = do
+    resolveFunction (Function name params (Just body)) = do
       state <- get
       put state {labels = Just Data.Map.empty}
       body' <- resolveBlock body
@@ -139,7 +139,8 @@ validate program =
         throwError $
           "Some labels were declared but not defined: " ++ show (filter isMissingLabel (Data.Map.elems labels_map))
       put state {labels = Nothing}
-      return (Function name body')
+      return (Function name params {- todo handle params -} (Just body'))
+    resolveFunction (Function _ _ Nothing) = throwError "Function body is missing."
 
     isMissingLabel :: LabelState -> Bool
     isMissingLabel (Missing _) = True
@@ -160,6 +161,8 @@ validate program =
       name' <- resolveNameDecl name
       init' <- mapM resolveExpression init
       return (Decl (VariableDeclaration name' init'))
+    resolveBlockItem (Decl _) = do
+      throwError "Function declarations not implemented"
     resolveBlockItem (Stmt stmt) = do
       stmt' <- resolveStatement stmt
       return (Stmt stmt')
@@ -216,6 +219,7 @@ validate program =
           name' <- resolveNameDecl name
           init' <- mapM resolveExpression init
           return (Just (ForInitDecl (VariableDeclaration name' init')))
+        Just (ForInitDecl _) -> throwError "Illegal for-loop initializer."
       maybeCond' <- mapM resolveExpression maybeCond
       maybeInc' <- mapM resolveExpression maybeInc
       stmt' <- withLoopContext (resolveStatement stmt)
@@ -307,3 +311,7 @@ validate program =
       trueExpr' <- resolveExpression trueExpr
       falseExpr' <- resolveExpression falseExpr
       return (Conditional cond' trueExpr' falseExpr')
+    resolveExpression (FunctionCall name args) = do
+      name' <- resolveName name
+      args' <- mapM resolveExpression args
+      return (FunctionCall name' args')

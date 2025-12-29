@@ -70,14 +70,16 @@ translate program nextID' = evalState (translateProgram program) initState
         }
 
     translateProgram :: P.Program -> TransM Program
-    translateProgram (P.Program fun) = do
+    translateProgram (P.Program [fun]) = do
       fun' <- translateFunction fun
       return (Program fun')
+    translateProgram _ = error "Only single-function programs are supported."
 
     translateFunction :: P.Function -> TransM Function
-    translateFunction (P.Function name body) = do
+    translateFunction (P.Function name _ {- TODO: handle params -} (Just body)) = do
       instructions <- translateBlock body
       return (Function name (instructions ++ [Return (Constant 0)]))
+    translateFunction (P.Function _ _ Nothing) = error "Function body is missing."
 
     translateBlock :: P.Block -> TransM [Instruction]
     translateBlock (P.Block items) = concat <$> mapM translateBlockItem items
@@ -87,7 +89,7 @@ translate program nextID' = evalState (translateProgram program) initState
     translateBlockItem (P.Decl (P.VariableDeclaration name (Just expr))) = do
       (instr, _value) <- translateExpression (P.Binary P.Assignment (P.Variable name) expr)
       return instr
-    translateBlockItem (P.Decl (P.VariableDeclaration _ _)) = return []
+    translateBlockItem (P.Decl _) = return []
 
     translateStatement :: P.Statement -> TransM [Instruction]
     translateStatement (P.ReturnStatement expression) = do
@@ -390,3 +392,4 @@ translate program nextID' = evalState (translateProgram program) initState
               ++ else_instructions
               ++ [Copy else_value destination, Label end_label]
       return (instructions, destination)
+    translateExpression (P.FunctionCall _ _) = error "Function calls are not supported in TAC translation yet."
