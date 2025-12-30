@@ -8,7 +8,6 @@ import Control.Monad (unless, when)
 import Control.Monad.Except
 import Control.Monad.State
 import qualified Data.Map
-import Data.Maybe (fromJust)
 import Parser
   ( BinaryOperator (Assignment, CompoundAssignment),
     Block (..),
@@ -34,9 +33,15 @@ data SwitchLabels
   | Default
   deriving (Show, Eq, Ord)
 
+data Linkage
+  = InternalLinkage
+  | ExternalLinkage
+  | NoLinkage
+  deriving (Show, Eq)
+
 data TransState = TransState
   { nextID :: Int,
-    locals :: [Data.Map.Map String String],
+    names :: [Data.Map.Map String (String, Linkage)],
     labels :: Maybe (Data.Map.Map String LabelState),
     switchLabels :: [Data.Map.Map SwitchLabels ()],
     allowBreak :: Bool,
@@ -45,30 +50,41 @@ data TransState = TransState
 
 type TransM a = ExceptT String (State TransState) a -- the translation monad encapsulating the translation state
 
-resolveNameDecl :: String -> TransM String
-resolveNameDecl name = do
+resolveNameDecl :: Linkage -> String -> TransM String
+resolveNameDecl NoLinkage name = do
   state <- get
-  case locals state of
+  case names state of
     [] -> throwError $ "resolveNameDecl: not in a context (`" ++ name ++ "`)"
     (inner : rest) -> case Data.Map.lookup name inner of
       Just _ -> throwError $ "Duplicate declaration of " ++ name
       Nothing -> do
         let n = nextID state
             name' = name ++ "." ++ show n
-            inner' = Data.Map.insert name name' inner
-        put state {nextID = n + 1, locals = inner' : rest}
+            inner' = Data.Map.insert name (name', NoLinkage) inner
+        put state {nextID = n + 1, names = inner' : rest}
         return name'
+resolveNameDecl linkage name = do
+  state <- get
+  case names state of
+    [] -> throwError $ "resolveNameDecl: not in a context (`" ++ name ++ "`)"
+    (inner : rest) -> case Data.Map.lookup name inner of
+      Just (name', linkage') | linkage' == linkage -> return name'
+      Just _ -> throwError $ "Duplicate declaration with conflicting linkage for " ++ name
+      Nothing -> do
+        let inner' = Data.Map.insert name (name, linkage) inner
+        put state {names = inner' : rest}
+        return name
 
 resolveName :: String -> TransM String
 resolveName name = do
   state <- get
-  case lookupName (locals state) of
-    Just name' -> return name'
+  case lookupName (names state) of
+    Just (name', _) -> return name'
     Nothing -> throwError $ "resolveName: not in a context for lookup of `" ++ name ++ "`"
   where
     lookupName [] = Nothing
     lookupName (scope : rest) = case Data.Map.lookup name scope of
-      Just name' -> Just name'
+      Just info -> Just info
       Nothing -> lookupName rest
 
 resolveLabelDecl :: String -> TransM String
@@ -129,7 +145,7 @@ resolve program =
     initState =
       TransState
         { nextID = 1001,
-          locals = [],
+          names = [Data.Map.empty],
           labels = Nothing,
           allowBreak = False,
           allowContinue = False,
@@ -142,45 +158,52 @@ resolve program =
       return (Program functions')
 
     resolveFunction :: Function -> TransM Function
-    resolveFunction (Function name params (Just body)) = do
+    resolveFunction (Function name params maybeBody) = do
+      name' <- resolveNameDecl ExternalLinkage name
       state <- get
-      let outer_names = locals state
-      put state {labels = Just Data.Map.empty, locals = Data.Map.empty : outer_names} -- new scope for function locals
-      params' <- mapM resolveNameDecl params
-      body' <- resolveBlock body False
+      let outer_names = names state
+          {- if the list has at least two elements, we are already inside a function -}
+          isNestedFunction (_ : _ : _) (Just _) = True
+          isNestedFunction _ _ = False
+      when (isNestedFunction outer_names maybeBody) $ throwError $ "Nested function definitions are not allowed." ++ show maybeBody
+      put state {labels = Just Data.Map.empty, names = Data.Map.empty : outer_names} -- new scope for function locals
+      params' <- mapM (resolveNameDecl NoLinkage) params
+      maybeBody' <- traverse (resolveBlock False) maybeBody
       state <- get
-      let labels_map = fromJust (labels state)
-      when (any isMissingLabel (Data.Map.elems labels_map)) $
-        throwError $
-          "Some labels were declared but not defined: " ++ show (filter isMissingLabel (Data.Map.elems labels_map))
-      put state {labels = Nothing, locals = outer_names} -- pop function scope
-      return (Function name params' (Just body'))
-    resolveFunction (Function _ _ Nothing) = throwError "Function body is missing."
-
+      case labels state of
+        Just labels_map -> do
+          when (any isMissingLabel (Data.Map.elems labels_map)) $
+            throwError $
+              "Some labels were declared but not defined: " ++ show (filter isMissingLabel (Data.Map.elems labels_map))
+        Nothing -> return ()
+      put state {labels = Nothing, names = outer_names} -- pop function scope
+      return (Function name' params' maybeBody')
     isMissingLabel :: LabelState -> Bool
     isMissingLabel (Missing _) = True
     isMissingLabel _ = False
 
-    resolveBlock :: Block -> Bool -> TransM Block
-    resolveBlock (Block items) addScope = do
+    resolveBlock :: Bool -> Block -> TransM Block
+    resolveBlock addScope (Block items) = do
       state <- get
-      let outer_locals = locals state
+      {- HLINT ignore "Use if" -}
+      let outer_locals = names state
           inner_locals = case addScope of
             False -> outer_locals
             True -> Data.Map.empty : outer_locals
-      put state {locals = inner_locals} -- add an empty sub-scope
+      put state {names = inner_locals} -- add an empty sub-scope
       items' <- mapM resolveBlockItem items
       state <- get
-      put state {locals = outer_locals} -- pop the sub-scope
+      put state {names = outer_locals} -- pop the sub-scope
       return (Block items')
 
     resolveBlockItem :: BlockItem -> TransM BlockItem
     resolveBlockItem (Decl (VariableDeclaration name init)) = do
-      name' <- resolveNameDecl name
+      name' <- resolveNameDecl NoLinkage name
       init' <- mapM resolveExpression init
       return (Decl (VariableDeclaration name' init'))
-    resolveBlockItem (Decl _) = do
-      throwError "Function declarations not implemented"
+    resolveBlockItem (Decl (FunctionDeclaration func)) = do
+      func' <- resolveFunction func
+      return (Decl (FunctionDeclaration func'))
     resolveBlockItem (Stmt stmt) = do
       stmt' <- resolveStatement stmt
       return (Stmt stmt')
@@ -213,7 +236,7 @@ resolve program =
       label' <- resolveLabel label
       return (GotoStatement label')
     resolveStatement (CompoundStatement block) = do
-      block' <- resolveBlock block True
+      block' <- resolveBlock True block
       return (CompoundStatement block')
     resolveStatement NullStatement = return NullStatement
     resolveStatement (WhileStatement cond stmt) = do
@@ -226,15 +249,15 @@ resolve program =
       return (DoWhileStatement cond' stmt')
     resolveStatement (ForStatement maybeInit maybeCond maybeInc stmt) = do
       state <- get
-      let outer_locals = locals state
-      put state {locals = Data.Map.empty : outer_locals} -- add an empty sub-scope
+      let outer_locals = names state
+      put state {names = Data.Map.empty : outer_locals} -- add an empty sub-scope
       maybeInit' <- case maybeInit of
         Nothing -> return Nothing
         Just (ForInitExpr expr) -> do
           expr' <- resolveExpression expr
           return (Just (ForInitExpr expr'))
         Just (ForInitDecl (VariableDeclaration name init)) -> do
-          name' <- resolveNameDecl name
+          name' <- resolveNameDecl NoLinkage name
           init' <- mapM resolveExpression init
           return (Just (ForInitDecl (VariableDeclaration name' init')))
         Just (ForInitDecl _) -> throwError "Illegal for-loop initializer."
@@ -242,7 +265,7 @@ resolve program =
       maybeInc' <- mapM resolveExpression maybeInc
       stmt' <- withLoopContext (resolveStatement stmt)
       state <- get
-      put state {locals = outer_locals} -- pop the sub-scope
+      put state {names = outer_locals} -- pop the sub-scope
       return (ForStatement maybeInit' maybeCond' maybeInc' stmt')
     resolveStatement BreakStatement = do
       state <- get
