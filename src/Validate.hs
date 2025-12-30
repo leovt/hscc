@@ -50,79 +50,6 @@ data TransState = TransState
 
 type TransM a = ExceptT String (State TransState) a -- the translation monad encapsulating the translation state
 
-resolveNameDecl :: Linkage -> String -> TransM String
-resolveNameDecl NoLinkage name = do
-  state <- get
-  case names state of
-    [] -> throwError $ "resolveNameDecl: not in a context (`" ++ name ++ "`)"
-    (inner : rest) -> case Data.Map.lookup name inner of
-      Just _ -> throwError $ "Duplicate declaration of " ++ name
-      Nothing -> do
-        let n = nextID state
-            name' = name ++ "." ++ show n
-            inner' = Data.Map.insert name (name', NoLinkage) inner
-        put state {nextID = n + 1, names = inner' : rest}
-        return name'
-resolveNameDecl linkage name = do
-  state <- get
-  case names state of
-    [] -> throwError $ "resolveNameDecl: not in a context (`" ++ name ++ "`)"
-    (inner : rest) -> case Data.Map.lookup name inner of
-      Just (name', linkage') | linkage' == linkage -> return name'
-      Just _ -> throwError $ "Duplicate declaration with conflicting linkage for " ++ name
-      Nothing -> do
-        let inner' = Data.Map.insert name (name, linkage) inner
-        put state {names = inner' : rest}
-        return name
-
-resolveName :: String -> TransM String
-resolveName name = do
-  state <- get
-  case lookupName (names state) of
-    Just (name', _) -> return name'
-    Nothing -> throwError $ "resolveName: not in a context for lookup of `" ++ name ++ "`"
-  where
-    lookupName [] = Nothing
-    lookupName (scope : rest) = case Data.Map.lookup name scope of
-      Just info -> Just info
-      Nothing -> lookupName rest
-
-resolveLabelDecl :: String -> TransM String
-resolveLabelDecl name = do
-  state <- get
-  case labels state of
-    Nothing -> throwError $ "not in a context for label declaration of `" ++ name ++ "`"
-    (Just labels_map) -> case Data.Map.lookup name labels_map of
-      Just (Resolved _) -> throwError $ "Duplicate declaration of label " ++ name
-      Just (Defined _) -> throwError $ "Duplicate declaration of label " ++ name
-      Just (Missing name') -> do
-        put state {labels = Just (Data.Map.insert name (Resolved name') labels_map)}
-        return name'
-      Nothing -> do
-        let n = nextID state
-            name' = name ++ "." ++ show n
-            labels_map' = Data.Map.insert name (Defined name') labels_map
-        put state {nextID = n + 1, labels = Just labels_map'}
-        return name'
-
-resolveLabel :: String -> TransM String
-resolveLabel name = do
-  state <- get
-  case labels state of
-    Nothing -> throwError $ "not in a context for label lookup of `" ++ name ++ "`"
-    (Just labels_map) -> case Data.Map.lookup name labels_map of
-      Just (Resolved name') -> pure name'
-      Just (Missing name') -> pure name'
-      Just (Defined name') -> do
-        put state {labels = Just (Data.Map.insert name (Resolved name') labels_map)}
-        return name'
-      Nothing -> do
-        let n = nextID state
-            name' = name ++ "." ++ show n
-            labels_map' = Data.Map.insert name (Missing name') labels_map
-        put state {nextID = n + 1, labels = Just labels_map'}
-        return name'
-
 newtype SymbolTable = SymbolTable ()
 
 validate :: Program -> Either String (Program, Int, SymbolTable)
@@ -151,6 +78,79 @@ resolve program =
           allowContinue = False,
           switchLabels = []
         }
+
+    resolveNameDecl :: Linkage -> String -> TransM String
+    resolveNameDecl NoLinkage name = do
+      state <- get
+      case names state of
+        [] -> throwError $ "resolveNameDecl: not in a context (`" ++ name ++ "`)"
+        (inner : rest) -> case Data.Map.lookup name inner of
+          Just _ -> throwError $ "Duplicate declaration of " ++ name
+          Nothing -> do
+            let n = nextID state
+                name' = name ++ "." ++ show n
+                inner' = Data.Map.insert name (name', NoLinkage) inner
+            put state {nextID = n + 1, names = inner' : rest}
+            return name'
+    resolveNameDecl linkage name = do
+      state <- get
+      case names state of
+        [] -> throwError $ "resolveNameDecl: not in a context (`" ++ name ++ "`)"
+        (inner : rest) -> case Data.Map.lookup name inner of
+          Just (name', linkage') | linkage' == linkage -> return name'
+          Just _ -> throwError $ "Duplicate declaration with conflicting linkage for " ++ name
+          Nothing -> do
+            let inner' = Data.Map.insert name (name, linkage) inner
+            put state {names = inner' : rest}
+            return name
+
+    resolveName :: String -> TransM String
+    resolveName name = do
+      state <- get
+      case lookupName (names state) of
+        Just (name', _) -> return name'
+        Nothing -> throwError $ "resolveName: not in a context for lookup of `" ++ name ++ "`"
+      where
+        lookupName [] = Nothing
+        lookupName (scope : rest) = case Data.Map.lookup name scope of
+          Just info -> Just info
+          Nothing -> lookupName rest
+
+    resolveLabelDecl :: String -> TransM String
+    resolveLabelDecl name = do
+      state <- get
+      case labels state of
+        Nothing -> throwError $ "not in a context for label declaration of `" ++ name ++ "`"
+        (Just labels_map) -> case Data.Map.lookup name labels_map of
+          Just (Resolved _) -> throwError $ "Duplicate declaration of label " ++ name
+          Just (Defined _) -> throwError $ "Duplicate declaration of label " ++ name
+          Just (Missing name') -> do
+            put state {labels = Just (Data.Map.insert name (Resolved name') labels_map)}
+            return name'
+          Nothing -> do
+            let n = nextID state
+                name' = name ++ "." ++ show n
+                labels_map' = Data.Map.insert name (Defined name') labels_map
+            put state {nextID = n + 1, labels = Just labels_map'}
+            return name'
+
+    resolveLabel :: String -> TransM String
+    resolveLabel name = do
+      state <- get
+      case labels state of
+        Nothing -> throwError $ "not in a context for label lookup of `" ++ name ++ "`"
+        (Just labels_map) -> case Data.Map.lookup name labels_map of
+          Just (Resolved name') -> pure name'
+          Just (Missing name') -> pure name'
+          Just (Defined name') -> do
+            put state {labels = Just (Data.Map.insert name (Resolved name') labels_map)}
+            return name'
+          Nothing -> do
+            let n = nextID state
+                name' = name ++ "." ++ show n
+                labels_map' = Data.Map.insert name (Missing name') labels_map
+            put state {nextID = n + 1, labels = Just labels_map'}
+            return name'
 
     resolveProgram :: Program -> TransM Program
     resolveProgram (Program functions) = do
