@@ -44,13 +44,14 @@ main = do
     putStrLn (renderString (layoutPretty defaultLayoutOptions doc))
     exitSuccess
 
-  (validated_ast, nextID) <- case validate ast of
+  (validated_ast, nextID, symbolTable) <- case validate ast of
     Left errormsg -> die errormsg
-    Right (ast, nextID, _) -> return (ast, nextID)
+    Right (ast, nextID, symbolTable) -> return (ast, nextID, symbolTable)
 
   when (validateOnly options) $ do
     let doc = pretty validated_ast
     putStrLn (renderString (layoutPretty defaultLayoutOptions doc))
+    print symbolTable
     exitSuccess
 
   let tac = TAC.translate validated_ast nextID

@@ -4,6 +4,7 @@ module Validate
   )
 where
 
+import CTypes (CType (..))
 import Control.Monad (unless, when)
 import Control.Monad.Except
 import Control.Monad.State
@@ -39,7 +40,7 @@ data Linkage
   | NoLinkage
   deriving (Show, Eq)
 
-data TransState = TransState
+data ResolutionState = ResolutionState
   { nextID :: Int,
     names :: [Data.Map.Map String (String, Linkage)],
     labels :: Maybe (Data.Map.Map String LabelState),
@@ -48,9 +49,30 @@ data TransState = TransState
     allowContinue :: Bool
   }
 
-type TransM a = ExceptT String (State TransState) a -- the translation monad encapsulating the translation state
+{- HLINT ignore "Use newtype instead of data" -}
+data TypecheckState = TypecheckState
+  { symbolTable :: SymbolTable
+  }
 
-newtype SymbolTable = SymbolTable ()
+type ResM a = ExceptT String (State ResolutionState) a -- the resolution monad encapsulating the resolution state
+
+type TypM a = ExceptT String (State TypecheckState) a -- the typechecking monad encapsulating the typechecking state
+
+data SymbolState
+  = SymDefined
+  | SymDeclared
+  deriving (Show, Eq)
+
+data SymbolInfo
+  = SymbolInfo
+  { symbolType :: CType,
+    symbolState :: SymbolState
+  }
+  deriving (Show)
+
+newtype SymbolTable
+  = SymbolTable (Data.Map.Map String SymbolInfo)
+  deriving (Show)
 
 validate :: Program -> Either String (Program, Int, SymbolTable)
 validate program = do
@@ -58,19 +80,14 @@ validate program = do
   (checked_program, symbolTable) <- typecheck resolved_program
   return (checked_program, nextID, symbolTable)
 
-typecheck :: Program -> Either String (Program, SymbolTable)
-typecheck program = do
-  -- currently a no-op
-  return (program, SymbolTable ())
-
 resolve :: Program -> Either String (Program, Int)
 resolve program =
   case runState (runExceptT (resolveProgram program)) initState of
     (Left err, _) -> Left err
-    (Right result, finalState) -> Right (result, nextID finalState)
+    (Right result, finalState) -> return (result, nextID finalState)
   where
     initState =
-      TransState
+      ResolutionState
         { nextID = 1001,
           names = [Data.Map.empty],
           labels = Nothing,
@@ -79,7 +96,7 @@ resolve program =
           switchLabels = []
         }
 
-    resolveNameDecl :: Linkage -> String -> TransM String
+    resolveNameDecl :: Linkage -> String -> ResM String
     resolveNameDecl NoLinkage name = do
       state <- get
       case names state of
@@ -104,7 +121,7 @@ resolve program =
             put state {names = inner' : rest}
             return name
 
-    resolveName :: String -> TransM String
+    resolveName :: String -> ResM String
     resolveName name = do
       state <- get
       case lookupName (names state) of
@@ -116,7 +133,7 @@ resolve program =
           Just info -> Just info
           Nothing -> lookupName rest
 
-    resolveLabelDecl :: String -> TransM String
+    resolveLabelDecl :: String -> ResM String
     resolveLabelDecl name = do
       state <- get
       case labels state of
@@ -134,7 +151,7 @@ resolve program =
             put state {nextID = n + 1, labels = Just labels_map'}
             return name'
 
-    resolveLabel :: String -> TransM String
+    resolveLabel :: String -> ResM String
     resolveLabel name = do
       state <- get
       case labels state of
@@ -152,12 +169,12 @@ resolve program =
             put state {nextID = n + 1, labels = Just labels_map'}
             return name'
 
-    resolveProgram :: Program -> TransM Program
+    resolveProgram :: Program -> ResM Program
     resolveProgram (Program functions) = do
       functions' <- mapM resolveFunction functions
       return (Program functions')
 
-    resolveFunction :: Function -> TransM Function
+    resolveFunction :: Function -> ResM Function
     resolveFunction (Function name params maybeBody) = do
       name' <- resolveNameDecl ExternalLinkage name
       state <- get
@@ -182,7 +199,7 @@ resolve program =
     isMissingLabel (Missing _) = True
     isMissingLabel _ = False
 
-    resolveBlock :: Bool -> Block -> TransM Block
+    resolveBlock :: Bool -> Block -> ResM Block
     resolveBlock addScope (Block items) = do
       state <- get
       {- HLINT ignore "Use if" -}
@@ -196,7 +213,7 @@ resolve program =
       put state {names = outer_locals} -- pop the sub-scope
       return (Block items')
 
-    resolveBlockItem :: BlockItem -> TransM BlockItem
+    resolveBlockItem :: BlockItem -> ResM BlockItem
     resolveBlockItem (Decl (VariableDeclaration name init)) = do
       name' <- resolveNameDecl NoLinkage name
       init' <- mapM resolveExpression init
@@ -208,7 +225,7 @@ resolve program =
       stmt' <- resolveStatement stmt
       return (Stmt stmt')
 
-    resolveStatement :: Statement -> TransM Statement
+    resolveStatement :: Statement -> ResM Statement
     resolveStatement (ReturnStatement expr) = do
       expr' <- resolveExpression expr
       return (ReturnStatement expr')
@@ -288,7 +305,7 @@ resolve program =
       put state_after {switchLabels = switchLabels state_before, allowBreak = allowBreak state_before}
       return (SwitchStatement expr' stmt')
 
-    checkSwitchLabels :: SwitchLabels -> TransM ()
+    checkSwitchLabels :: SwitchLabels -> ResM ()
     checkSwitchLabels label = do
       state <- get
       case switchLabels state of
@@ -300,7 +317,7 @@ resolve program =
             put state {switchLabels = current' : rest}
             return ()
 
-    withLoopContext :: TransM a -> TransM a
+    withLoopContext :: ResM a -> ResM a
     withLoopContext action = do
       state_before <- get
       put state_before {allowBreak = True, allowContinue = True}
@@ -309,7 +326,7 @@ resolve program =
       put state_after {allowBreak = allowBreak state_before, allowContinue = allowContinue state_before}
       return result
 
-    resolveExpression :: Expression -> TransM Expression
+    resolveExpression :: Expression -> ResM Expression
     resolveExpression (Variable name) = do
       name' <- resolveName name
       return (Variable name')
@@ -356,3 +373,191 @@ resolve program =
       name' <- resolveName name
       args' <- mapM resolveExpression args
       return (FunctionCall name' args')
+
+typecheck :: Program -> Either String (Program, SymbolTable)
+typecheck program = do
+  case runState (runExceptT (tcProgram program)) initState of
+    (Left err, _) -> Left err
+    (Right result, finalState) -> return (result, symbolTable finalState)
+  where
+    initState =
+      TypecheckState
+        { symbolTable = SymbolTable Data.Map.empty
+        }
+
+    tcProgram :: Program -> TypM Program
+    tcProgram (Program functions) = do
+      functions' <- mapM tcFunction functions
+      return (Program functions')
+
+    tcFunction :: Function -> TypM Function
+    tcFunction (Function name params maybeBody) = do
+      let funcT = FuncT IntT (replicate (length params) IntT)
+          thisState = case maybeBody of
+            Just _ -> SymDefined
+            Nothing -> SymDeclared
+
+      state <- get
+      let (SymbolTable symtab) = symbolTable state
+      sinfo' <- case Data.Map.lookup name symtab of
+        Just sinfo -> do
+          when (funcT /= symbolType sinfo) $
+            throwError $
+              "Function " ++ name ++ " declared with different type."
+          when (symbolState sinfo == SymDefined && thisState == SymDefined) $
+            throwError $
+              "Function " ++ name ++ " already defined." {- TODO: this belongs into the resolution phase -}
+          let oldState = symbolState sinfo
+              newState = case (oldState, thisState) of
+                (SymDeclared, SymDeclared) -> SymDeclared
+                _ -> SymDefined
+          return $ SymbolInfo funcT newState
+        Nothing -> return $ SymbolInfo funcT thisState
+
+      let symtab' = Data.Map.insert name sinfo' symtab
+      put state {symbolTable = SymbolTable symtab'}
+      let tcParam :: String -> TypM String
+          tcParam paramName = do
+            state <- get
+            let (SymbolTable symtab) = symbolTable state
+                symbol = SymbolInfo IntT SymDefined
+                symtab' = Data.Map.insert paramName symbol symtab
+            put state {symbolTable = SymbolTable symtab'}
+            return paramName
+      params' <- mapM tcParam params
+      maybeBody' <- traverse tcBlock maybeBody
+      return (Function name params' maybeBody')
+
+    tcDeclaration :: Declaration -> TypM Declaration
+    tcDeclaration (VariableDeclaration name init) = do
+      state <- get
+      let (SymbolTable symtab) = symbolTable state
+          varT = IntT {- TODO: variable types -}
+          symbol = SymbolInfo varT SymDefined
+          symtab' = Data.Map.insert name symbol symtab
+      put state {symbolTable = SymbolTable symtab'}
+      mapM_ (tcExpressionOf varT) init
+      return (VariableDeclaration name init)
+    tcDeclaration (FunctionDeclaration func) = do
+      func' <- tcFunction func
+      return (FunctionDeclaration func')
+
+    tcBlock :: Block -> TypM Block
+    tcBlock (Block items) = do
+      items' <- mapM tcBlockItem items
+      return (Block items')
+
+    tcBlockItem :: BlockItem -> TypM BlockItem
+    tcBlockItem (Decl decl) = do
+      decl' <- tcDeclaration decl
+      return (Decl decl')
+    tcBlockItem (Stmt stmt) = do
+      stmt' <- tcStatement stmt
+      return (Stmt stmt')
+
+    tcStatement :: Statement -> TypM Statement
+    tcStatement (ReturnStatement expr) = do
+      let retT = IntT {- TODO: function return type lookup -}
+      tcExpressionOf retT expr
+      return (ReturnStatement expr)
+    tcStatement (ExpressionStatement expr) = do
+      _ <- tcExpression expr
+      return (ExpressionStatement expr)
+    tcStatement (IfStatement cond thenStmt maybeElseStmt) = do
+      tcExpressionOf IntT cond
+      thenStmt' <- tcStatement thenStmt
+      maybeElseStmt' <- mapM tcStatement maybeElseStmt
+      return (IfStatement cond thenStmt' maybeElseStmt')
+    tcStatement (LabelledStatement label stmt) = do
+      stmt' <- tcStatement stmt
+      return (LabelledStatement label stmt')
+    tcStatement (GotoStatement label) = return (GotoStatement label)
+    tcStatement (CompoundStatement block) = do
+      block' <- tcBlock block
+      return (CompoundStatement block')
+    tcStatement NullStatement = return NullStatement
+    tcStatement (WhileStatement cond stmt) = do
+      tcExpressionOf IntT cond
+      stmt' <- tcStatement stmt
+      return (WhileStatement cond stmt')
+    tcStatement (DoWhileStatement cond stmt) = do
+      tcExpressionOf IntT cond
+      stmt' <- tcStatement stmt
+      return (DoWhileStatement cond stmt')
+    tcStatement (ForStatement maybeInit maybeCond maybeInc stmt) = do
+      maybeInit' <- case maybeInit of
+        Nothing -> return Nothing
+        Just (ForInitExpr expr) -> do
+          _ <- tcExpression expr
+          return (Just (ForInitExpr expr))
+        Just (ForInitDecl decl) -> do
+          decl' <- tcDeclaration decl
+          return (Just (ForInitDecl decl'))
+      mapM_ (tcExpressionOf IntT) maybeCond
+      mapM_ tcExpression maybeInc
+      stmt' <- tcStatement stmt
+      return (ForStatement maybeInit' maybeCond maybeInc stmt')
+    tcStatement BreakStatement = return BreakStatement
+    tcStatement ContinueStatement = return ContinueStatement
+    tcStatement (SwitchStatement expr stmt) = do
+      tcExpressionOf IntT expr
+      stmt' <- tcStatement stmt
+      return (SwitchStatement expr stmt')
+
+    tcExpression :: Expression -> TypM CType
+    tcExpression (Variable name) = do
+      state <- get
+      let (SymbolTable symtab) = symbolTable state
+      case Data.Map.lookup name symtab of
+        Just sinfo -> return (symbolType sinfo)
+        Nothing -> throwError $ "tcExpression: Undeclared variable " ++ name
+    tcExpression (Unary _ expr) = tcExpression expr
+    tcExpression (Binary _ left right) = do
+      leftT <- tcExpression left
+      rightT <- tcExpression right
+      unless (leftT == rightT) $
+        throwError $
+          "Type mismatch in binary operation: " ++ show leftT ++ " vs " ++ show rightT
+      return leftT
+    tcExpression (Constant _) = return IntT {- TODO: constants can have different types later -}
+    tcExpression (Conditional cond trueExpr falseExpr) = do
+      cond' <- tcExpression cond
+      unless (cond' == IntT) $
+        throwError $
+          "Condition expression must be of type Int, got " ++ show cond'
+      trueT <- tcExpression trueExpr
+      falseT <- tcExpression falseExpr
+      unless (trueT == falseT) $
+        throwError $
+          "Type mismatch in conditional expression: " ++ show trueT ++ " vs " ++ show falseT
+      return trueT
+    tcExpression (FunctionCall name args) = do
+      argsT <- mapM tcExpression args
+      funcT <- do
+        state <- get
+        let (SymbolTable symtab) = symbolTable state
+        case Data.Map.lookup name symtab of
+          Just sinfo -> return (symbolType sinfo)
+          Nothing -> throwError $ "tcExpression: Undeclared function " ++ name
+      case funcT of
+        FuncT retT paramTs -> do
+          unless (argsT == paramTs) $
+            throwError $
+              "Function "
+                ++ name
+                ++ " called with incorrect argument types: expected "
+                ++ show paramTs
+                ++ ", got "
+                ++ show argsT
+          return retT
+        _ -> throwError $ "Type error: " ++ name ++ " is not a function."
+
+    tcExpressionOf :: CType -> Expression -> TypM ()
+    tcExpressionOf expectedType expr = do
+      actualType <- tcExpression expr
+      unless (actualType == expectedType) $
+        throwError $
+          "Type mismatch: expected "
+            ++ show expectedType
+            ++ ", got "
+            ++ show actualType
