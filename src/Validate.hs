@@ -513,7 +513,9 @@ typecheck program = do
       case Data.Map.lookup name symtab of
         Just sinfo -> return (symbolType sinfo)
         Nothing -> throwError $ "tcExpression: Undeclared variable " ++ name
-    tcExpression (Unary _ expr) = tcExpression expr
+    tcExpression (Unary _ expr) = do
+      tcExpressionOf IntT expr
+      return IntT
     tcExpression (Binary _ left right) = do
       leftT <- tcExpression left
       rightT <- tcExpression right
