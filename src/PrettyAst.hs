@@ -14,22 +14,22 @@ import Prettyprinter (Doc, Pretty (pretty), hardline, nest, parens, pretty, vsep
 instance Pretty Program where
   pretty (Program f) = pretty f
 
-instance Pretty Function where
-  pretty (Function name params (Just block) storage_class) =
+instance Pretty FunctionDeclaration where
+  pretty (FunctionDeclaration name params (Just block) storage_class) =
     pretty "Function"
       <+> pretty name
       <+> pretty (show storage_class)
       <+> parens (pretty (intercalate ", " params))
       <+> pretty block
-  pretty (Function name params Nothing storage_class) =
+  pretty (FunctionDeclaration name params Nothing storage_class) =
     pretty "Function"
       <+> pretty name
       <+> pretty (show storage_class)
       <+> parens (pretty (intercalate ", " params))
 
 instance Pretty Declaration where
-  pretty (FunctionDeclaration fun) = pretty fun
-  pretty decl@(VariableDeclaration {}) = pretty (show decl)
+  pretty (FunDecl fun) = pretty fun
+  pretty decl@(VarDecl {}) = pretty (show decl)
 
 instance Pretty BlockItem where
   pretty (Stmt stmt) = pretty stmt

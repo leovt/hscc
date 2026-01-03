@@ -1,7 +1,8 @@
 module Parser
   ( parser,
     Program (..),
-    Function (..),
+    FunctionDeclaration (..),
+    VariableDeclaration (..),
     Block (..),
     BlockItem (..),
     Statement (..),
@@ -24,10 +25,6 @@ data Program
   = Program [Declaration]
   deriving (Show)
 
-data Function
-  = Function String [String] (Maybe Block) StorageClass
-  deriving (Show)
-
 data BlockItem
   = Stmt Statement
   | Decl Declaration
@@ -42,8 +39,16 @@ newtype Block = Block [BlockItem]
   deriving (Show)
 
 data Declaration
+  = VarDecl VariableDeclaration
+  | FunDecl FunctionDeclaration
+  deriving (Show)
+
+data VariableDeclaration
   = VariableDeclaration String (Maybe Expression) StorageClass
-  | FunctionDeclaration Function
+  deriving (Show)
+
+data FunctionDeclaration
+  = FunctionDeclaration String [String] (Maybe Block) StorageClass
   deriving (Show)
 
 data Label
@@ -192,7 +197,7 @@ parseProgram tokens = parseProgramSeq tokens []
         Nothing -> Left "expected declaration"
         Just (fun, rest) -> parseProgramSeq rest (fun : acc)
 
-parseFunction :: [Token] -> Either String (Function, [Token])
+parseFunction :: [Token] -> Either String (FunctionDeclaration, [Token])
 parseFunction (TokKeyInt : TokIdent name : TokOpenParen : tail) = do
   let parse_params :: [String] -> [Token] -> Either String ([String], [Token])
       parse_params [] (TokKeyVoid : TokCloseParen : rest) = return ([], rest)
@@ -204,8 +209,8 @@ parseFunction (TokKeyInt : TokIdent name : TokOpenParen : tail) = do
   case rest of
     TokOpenBrace : rest' -> do
       (block, rest'') <- parseBlock (TokOpenBrace : rest')
-      return (Function name params (Just block) Extern, rest'')
-    TokSemicolon : rest -> return (Function name params Nothing Extern, rest)
+      return (FunctionDeclaration name params (Just block) Extern, rest'')
+    TokSemicolon : rest -> return (FunctionDeclaration name params Nothing Extern, rest)
     _ -> Left "expected function body or ';' after function declaration"
 parseFunction _ = Left "expected function declaration"
 
@@ -321,7 +326,7 @@ parseStatement (TokKeyFor : TokOpenParen : tail) = do
       parseInitializer tokens = do
         decl <- maybeParseDeclaration tokens
         case decl of
-          Just (FunctionDeclaration _, _) -> Left "no function declaration in for initializer allowed."
+          Just (FunDecl _, _) -> Left "no function declaration in for initializer allowed."
           Just (d, rest) -> return (Just (ForInitDecl d), rest)
           Nothing -> do
             (expr, rest) <- parseExpression tokens
@@ -380,11 +385,13 @@ maybeParseDeclaration _ = return Nothing
 parseDeclaration :: [Token] -> Either String (Declaration, [Token])
 parseDeclaration tokens@(TokKeyInt : TokIdent _ : TokOpenParen : _) = do
   (fun, rest) <- parseFunction tokens
-  return (FunctionDeclaration fun, rest)
-parseDeclaration tokens@(TokKeyInt : TokIdent _ : _) = parseVariableDeclaration tokens
+  return (FunDecl fun, rest)
+parseDeclaration tokens@(TokKeyInt : TokIdent _ : _) = do
+  (decl, rest) <- parseVariableDeclaration tokens
+  return (VarDecl decl, rest)
 parseDeclaration _ = Left "expected declaration."
 
-parseVariableDeclaration :: [Token] -> Either String (Declaration, [Token])
+parseVariableDeclaration :: [Token] -> Either String (VariableDeclaration, [Token])
 parseVariableDeclaration (TokKeyInt : (TokIdent name) : tokens) = case tokens of
   (TokEqual : rest) -> do
     (expr, rest') <- parseExpression rest

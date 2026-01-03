@@ -18,11 +18,12 @@ import Parser
     Declaration (..),
     Expression (..),
     ForInitializer (..),
-    Function (..),
+    FunctionDeclaration (..),
     Label (..),
     Program (..),
     Statement (..),
     UnaryOperator (..),
+    VariableDeclaration (..),
   )
 
 data LabelState
@@ -177,16 +178,16 @@ resolve program =
       return (Program decls')
 
     resolveDeclaration :: Declaration -> ResM Declaration
-    resolveDeclaration (FunctionDeclaration f) = do
+    resolveDeclaration (FunDecl f) = do
       f' <- resolveFunction f
-      return (FunctionDeclaration f')
-    resolveDeclaration (VariableDeclaration name init sclass) = do
+      return (FunDecl f')
+    resolveDeclaration (VarDecl (VariableDeclaration name init sclass)) = do
       name' <- resolveNameDecl NoLinkage name
       init' <- mapM resolveExpression init
-      return (VariableDeclaration name' init' sclass)
+      return (VarDecl (VariableDeclaration name' init' sclass))
 
-    resolveFunction :: Function -> ResM Function
-    resolveFunction (Function name params maybeBody sclass) = do
+    resolveFunction :: FunctionDeclaration -> ResM FunctionDeclaration
+    resolveFunction (FunctionDeclaration name params maybeBody sclass) = do
       name' <- resolveNameDecl ExternalLinkage name
       state <- get
       let outer_names = names state
@@ -205,7 +206,7 @@ resolve program =
               "Some labels were declared but not defined: " ++ show (filter isMissingLabel (Data.Map.elems labels_map))
         Nothing -> return ()
       put state {labels = Nothing, names = outer_names} -- pop function scope
-      return (Function name' params' maybeBody' sclass)
+      return (FunctionDeclaration name' params' maybeBody' sclass)
     isMissingLabel :: LabelState -> Bool
     isMissingLabel (Missing _) = True
     isMissingLabel _ = False
@@ -225,13 +226,13 @@ resolve program =
       return (Block items')
 
     resolveBlockItem :: BlockItem -> ResM BlockItem
-    resolveBlockItem (Decl (VariableDeclaration name init sclass)) = do
+    resolveBlockItem (Decl (VarDecl (VariableDeclaration name init sclass))) = do
       name' <- resolveNameDecl NoLinkage name
       init' <- mapM resolveExpression init
-      return (Decl (VariableDeclaration name' init' sclass))
-    resolveBlockItem (Decl (FunctionDeclaration func)) = do
+      return (Decl (VarDecl (VariableDeclaration name' init' sclass)))
+    resolveBlockItem (Decl (FunDecl func)) = do
       func' <- resolveFunction func
-      return (Decl (FunctionDeclaration func'))
+      return (Decl (FunDecl func'))
     resolveBlockItem (Stmt stmt) = do
       stmt' <- resolveStatement stmt
       return (Stmt stmt')
@@ -284,10 +285,10 @@ resolve program =
         Just (ForInitExpr expr) -> do
           expr' <- resolveExpression expr
           return (Just (ForInitExpr expr'))
-        Just (ForInitDecl (VariableDeclaration name init sclass)) -> do
+        Just (ForInitDecl (VarDecl (VariableDeclaration name init sclass))) -> do
           name' <- resolveNameDecl NoLinkage name
           init' <- mapM resolveExpression init
-          return (Just (ForInitDecl (VariableDeclaration name' init' sclass)))
+          return (Just (ForInitDecl (VarDecl (VariableDeclaration name' init' sclass))))
         Just (ForInitDecl _) -> throwError "Illegal for-loop initializer."
       maybeCond' <- mapM resolveExpression maybeCond
       maybeInc' <- mapM resolveExpression maybeInc
@@ -401,8 +402,8 @@ typecheck program = do
       decls' <- mapM tcDeclaration decls
       return (Program decls')
 
-    tcFunction :: Function -> TypM Function
-    tcFunction (Function name params maybeBody sclass) = do
+    tcFunction :: FunctionDeclaration -> TypM FunctionDeclaration
+    tcFunction (FunctionDeclaration name params maybeBody sclass) = do
       let funcT = FuncT IntT (replicate (length params) IntT)
           thisState = case maybeBody of
             Just _ -> SymDefined
@@ -437,10 +438,10 @@ typecheck program = do
             return paramName
       params' <- mapM tcParam params
       maybeBody' <- traverse tcBlock maybeBody
-      return (Function name params' maybeBody' sclass)
+      return (FunctionDeclaration name params' maybeBody' sclass)
 
     tcDeclaration :: Declaration -> TypM Declaration
-    tcDeclaration (VariableDeclaration name init sclass) = do
+    tcDeclaration (VarDecl (VariableDeclaration name init sclass)) = do
       state <- get
       let (SymbolTable symtab) = symbolTable state
           varT = IntT {- TODO: variable types -}
@@ -448,10 +449,10 @@ typecheck program = do
           symtab' = Data.Map.insert name symbol symtab
       put state {symbolTable = SymbolTable symtab'}
       mapM_ (tcExpressionOf varT) init
-      return (VariableDeclaration name init sclass)
-    tcDeclaration (FunctionDeclaration func) = do
+      return (VarDecl (VariableDeclaration name init sclass))
+    tcDeclaration (FunDecl func) = do
       func' <- tcFunction func
-      return (FunctionDeclaration func')
+      return (FunDecl func')
 
     tcBlock :: Block -> TypM Block
     tcBlock (Block items) = do
