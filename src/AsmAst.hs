@@ -19,7 +19,7 @@ data Program
   deriving (Show)
 
 data Function
-  = Function String [Operand] [Instruction]
+  = Function String [Instruction]
   deriving (Show)
 
 data Instruction
@@ -97,7 +97,7 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
     translateProgram (T.Program functions) = Program (map translateFunction functions)
 
     translateFunction :: T.Function -> Function
-    translateFunction (T.Function name params stmts) = Function name params' instructions
+    translateFunction (T.Function name params stmts) = Function name instructions
       where
         instructions =
           copyRegisterParameters
@@ -276,13 +276,12 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
     replacePseudoIns any = return any
 
     replacePseudoFun :: Function -> TransM Function
-    replacePseudoFun (Function name args instructions) = do
+    replacePseudoFun (Function name instructions) = do
       put (TransState {stackSize = 0, pseudoMap = Data.Map.empty}) -- start with an empty mapping
-      args' <- mapM replacePseudoOp args
       instructions' <- mapM replacePseudoIns instructions
       state <- get
       let size = 16 * quot (stackSize state + 15) 16
-      return (Function name args' (AllocateStack size : instructions'))
+      return (Function name (AllocateStack size : instructions'))
 
     replacePseudoProg :: Program -> TransM Program
     replacePseudoProg (Program functions) = do
@@ -293,7 +292,7 @@ fixInstructions :: Program -> Program
 fixInstructions (Program fun) = Program (map fixInstructionsFun fun)
   where
     fixInstructionsFun :: Function -> Function
-    fixInstructionsFun (Function name args instructions) = Function name args (concatMap fixInstr instructions)
+    fixInstructionsFun (Function name instructions) = Function name (concatMap fixInstr instructions)
 
     fixInstr :: Instruction -> [Instruction]
     fixInstr (TwoOp Mul src (Stack b)) =
@@ -329,7 +328,7 @@ emitProgram :: Program -> [String]
 emitProgram (Program fun) = concatMap emitFunction fun ++ [".section .note.GNU-stack,\"\",@progbits"]
   where
     emitFunction :: Function -> [String]
-    emitFunction (Function name _args instructions) = [".globl " ++ name, name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ map emitInstruction instructions
+    emitFunction (Function name instructions) = [".globl " ++ name, name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ map emitInstruction instructions
 
     emitInstruction :: Instruction -> String
     emitInstruction (TwoOp ShLeft src dst) = "    " ++ twoOp ShLeft ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand Reg4 dst
