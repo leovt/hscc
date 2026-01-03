@@ -78,4 +78,11 @@ main = do
         Just filename -> filename
         Nothing -> replaceExtension (inputFile options) ""
 
-  callProcess "gcc" [asmoutput, "-o", executable]
+  let objectfile = case outputFile options of
+        Just filename -> filename
+        Nothing -> replaceExtension (inputFile options) ".o"
+
+  callProcess "gcc" $
+    if noLink options
+      then [asmoutput, "-c", "-o", objectfile]
+      else [asmoutput, "-o", executable]

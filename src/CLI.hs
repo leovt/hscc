@@ -9,7 +9,8 @@ data Options = Options
     parseOnly :: Bool,
     validateOnly :: Bool,
     tackyOnly :: Bool,
-    codegenOnly :: Bool
+    codegenOnly :: Bool,
+    noLink :: Bool
   }
   deriving (Show)
 
@@ -47,6 +48,10 @@ optionsParser =
     <*> switch
       ( long "codegen"
           <> help "Stop after codegen"
+      )
+    <*> switch
+      ( short 'c'
+          <> help "Compile and assemble, but do not link."
       )
 
 getOptions :: IO Options
