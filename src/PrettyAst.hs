@@ -7,22 +7,33 @@ module PrettyAst
   )
 where
 
-import Parser
 import Data.List (intercalate)
+import Parser
 import Prettyprinter (Doc, Pretty (pretty), hardline, nest, parens, pretty, vsep, (<+>), (<>))
 
 instance Pretty Program where
   pretty (Program f) = pretty f
 
 instance Pretty Function where
-  pretty (Function name params (Just block)) =
-    pretty "Function" <+> pretty name <+> parens (pretty (intercalate ", " params)) <+> pretty block
-  pretty (Function name params Nothing) =
-    pretty "Function" <+> pretty name <+> parens (pretty (intercalate ", " params))
+  pretty (Function name params (Just block) storage_class) =
+    pretty "Function"
+      <+> pretty name
+      <+> pretty (show storage_class)
+      <+> parens (pretty (intercalate ", " params))
+      <+> pretty block
+  pretty (Function name params Nothing storage_class) =
+    pretty "Function"
+      <+> pretty name
+      <+> pretty (show storage_class)
+      <+> parens (pretty (intercalate ", " params))
+
+instance Pretty Declaration where
+  pretty (FunctionDeclaration fun) = pretty fun
+  pretty decl@(VariableDeclaration {}) = pretty (show decl)
 
 instance Pretty BlockItem where
   pretty (Stmt stmt) = pretty stmt
-  pretty (Decl decl) = pretty (show decl)
+  pretty (Decl decl) = pretty decl
 
 instance Pretty Block where
   pretty (Block items) =

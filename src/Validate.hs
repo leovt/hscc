@@ -172,12 +172,21 @@ resolve program =
             return name'
 
     resolveProgram :: Program -> ResM Program
-    resolveProgram (Program functions) = do
-      functions' <- mapM resolveFunction functions
-      return (Program functions')
+    resolveProgram (Program decls) = do
+      decls' <- mapM resolveDeclaration decls
+      return (Program decls')
+
+    resolveDeclaration :: Declaration -> ResM Declaration
+    resolveDeclaration (FunctionDeclaration f) = do
+      f' <- resolveFunction f
+      return (FunctionDeclaration f')
+    resolveDeclaration (VariableDeclaration name init sclass) = do
+      name' <- resolveNameDecl NoLinkage name
+      init' <- mapM resolveExpression init
+      return (VariableDeclaration name' init' sclass)
 
     resolveFunction :: Function -> ResM Function
-    resolveFunction (Function name params maybeBody) = do
+    resolveFunction (Function name params maybeBody sclass) = do
       name' <- resolveNameDecl ExternalLinkage name
       state <- get
       let outer_names = names state
@@ -196,7 +205,7 @@ resolve program =
               "Some labels were declared but not defined: " ++ show (filter isMissingLabel (Data.Map.elems labels_map))
         Nothing -> return ()
       put state {labels = Nothing, names = outer_names} -- pop function scope
-      return (Function name' params' maybeBody')
+      return (Function name' params' maybeBody' sclass)
     isMissingLabel :: LabelState -> Bool
     isMissingLabel (Missing _) = True
     isMissingLabel _ = False
@@ -216,10 +225,10 @@ resolve program =
       return (Block items')
 
     resolveBlockItem :: BlockItem -> ResM BlockItem
-    resolveBlockItem (Decl (VariableDeclaration name init)) = do
+    resolveBlockItem (Decl (VariableDeclaration name init sclass)) = do
       name' <- resolveNameDecl NoLinkage name
       init' <- mapM resolveExpression init
-      return (Decl (VariableDeclaration name' init'))
+      return (Decl (VariableDeclaration name' init' sclass))
     resolveBlockItem (Decl (FunctionDeclaration func)) = do
       func' <- resolveFunction func
       return (Decl (FunctionDeclaration func'))
@@ -275,10 +284,10 @@ resolve program =
         Just (ForInitExpr expr) -> do
           expr' <- resolveExpression expr
           return (Just (ForInitExpr expr'))
-        Just (ForInitDecl (VariableDeclaration name init)) -> do
+        Just (ForInitDecl (VariableDeclaration name init sclass)) -> do
           name' <- resolveNameDecl NoLinkage name
           init' <- mapM resolveExpression init
-          return (Just (ForInitDecl (VariableDeclaration name' init')))
+          return (Just (ForInitDecl (VariableDeclaration name' init' sclass)))
         Just (ForInitDecl _) -> throwError "Illegal for-loop initializer."
       maybeCond' <- mapM resolveExpression maybeCond
       maybeInc' <- mapM resolveExpression maybeInc
@@ -388,12 +397,12 @@ typecheck program = do
         }
 
     tcProgram :: Program -> TypM Program
-    tcProgram (Program functions) = do
-      functions' <- mapM tcFunction functions
-      return (Program functions')
+    tcProgram (Program decls) = do
+      decls' <- mapM tcDeclaration decls
+      return (Program decls')
 
     tcFunction :: Function -> TypM Function
-    tcFunction (Function name params maybeBody) = do
+    tcFunction (Function name params maybeBody sclass) = do
       let funcT = FuncT IntT (replicate (length params) IntT)
           thisState = case maybeBody of
             Just _ -> SymDefined
@@ -428,10 +437,10 @@ typecheck program = do
             return paramName
       params' <- mapM tcParam params
       maybeBody' <- traverse tcBlock maybeBody
-      return (Function name params' maybeBody')
+      return (Function name params' maybeBody' sclass)
 
     tcDeclaration :: Declaration -> TypM Declaration
-    tcDeclaration (VariableDeclaration name init) = do
+    tcDeclaration (VariableDeclaration name init sclass) = do
       state <- get
       let (SymbolTable symtab) = symbolTable state
           varT = IntT {- TODO: variable types -}
@@ -439,7 +448,7 @@ typecheck program = do
           symtab' = Data.Map.insert name symbol symtab
       put state {symbolTable = SymbolTable symtab'}
       mapM_ (tcExpressionOf varT) init
-      return (VariableDeclaration name init)
+      return (VariableDeclaration name init sclass)
     tcDeclaration (FunctionDeclaration func) = do
       func' <- tcFunction func
       return (FunctionDeclaration func')

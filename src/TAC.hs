@@ -73,22 +73,26 @@ translate program nextID' = evalState (translateProgram program) initState
         }
 
     translateProgram :: P.Program -> TransM Program
-    translateProgram (P.Program fun) = do
-      fun' <- mapM translateFunction fun
+    translateProgram (P.Program decls) = do
+      fun' <- mapM translateDeclaration decls
       return (Program (catMaybes fun'))
 
+    translateDeclaration :: P.Declaration -> TransM (Maybe Function)
+    translateDeclaration (P.FunctionDeclaration fun) = translateFunction fun
+    translateDeclaration _ = return Nothing
+
     translateFunction :: P.Function -> TransM (Maybe Function)
-    translateFunction (P.Function name params (Just body)) = do
+    translateFunction (P.Function name params (Just body) _) = do
       instructions <- translateBlock body
       return $ Just (Function name (map Variable params) (instructions ++ [Return (Constant 0)]))
-    translateFunction (P.Function _ _ Nothing) = return Nothing
+    translateFunction (P.Function _ _ Nothing _) = return Nothing
 
     translateBlock :: P.Block -> TransM [Instruction]
     translateBlock (P.Block items) = concat <$> mapM translateBlockItem items
 
     translateBlockItem :: P.BlockItem -> TransM [Instruction]
     translateBlockItem (P.Stmt s) = translateStatement s
-    translateBlockItem (P.Decl (P.VariableDeclaration name (Just expr))) = do
+    translateBlockItem (P.Decl (P.VariableDeclaration name (Just expr) _)) = do
       (instr, _value) <- translateExpression (P.Binary P.Assignment (P.Variable name) expr)
       return instr
     translateBlockItem (P.Decl _) = return []
@@ -169,7 +173,7 @@ translate program nextID' = evalState (translateProgram program) initState
         Just (P.ForInitExpr expr) -> do
           (instr, _value) <- translateExpression expr
           return instr
-        Just (P.ForInitDecl (P.VariableDeclaration name (Just expr))) -> do
+        Just (P.ForInitDecl (P.VariableDeclaration name (Just expr) _)) -> do
           (instr, _value) <- translateExpression (P.Binary P.Assignment (P.Variable name) expr)
           return instr
         Just (P.ForInitDecl _) -> return []

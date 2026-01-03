@@ -24,6 +24,8 @@ data Token
   | TokKeySwitch
   | TokKeyCase
   | TokKeyDefault
+  | TokKeyExtern
+  | TokKeyStatic
   | TokKeyIf
   | TokKeyElse
   | TokOpenParen
@@ -141,6 +143,8 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
     map_keyword "switch" = TokKeySwitch
     map_keyword "case" = TokKeyCase
     map_keyword "default" = TokKeyDefault
+    map_keyword "extern" = TokKeyExtern
+    map_keyword "static" = TokKeyStatic
     map_keyword "if" = TokKeyIf
     map_keyword "else" = TokKeyElse
     map_keyword ident = TokIdent ident
