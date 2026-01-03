@@ -8,7 +8,7 @@ module PrettyASM
 where
 
 import AsmAst
-import Prettyprinter (Doc, Pretty (pretty), hardline, nest, pretty, vsep, (<+>), (<>))
+import Prettyprinter (Doc, Pretty (pretty), hardline, nest, pretty, sep, vsep, (<+>), (<>))
 
 instance Pretty Program where
   pretty (Program f) = pretty f
