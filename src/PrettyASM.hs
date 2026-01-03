@@ -8,15 +8,17 @@ module PrettyASM
 where
 
 import AsmAst
-import Prettyprinter (Doc, Pretty (pretty), hardline, nest, pretty, vsep, (<+>), (<>))
+import Data.List (intercalate)
+import Prettyprinter (Doc, Pretty (pretty), hardline, nest, parens, pretty, sep, vsep, (<+>), (<>))
 
 instance Pretty Program where
   pretty (Program f) = pretty f
 
 instance Pretty Function where
-  pretty (Function name instrs) =
+  pretty (Function name args instrs) =
     pretty "Function"
       <+> pretty name
+      <+> parens (pretty $ intercalate ", " (map show args))
       <+> pretty "{"
       <> hardline
       <> vsep (map pretty instrs)

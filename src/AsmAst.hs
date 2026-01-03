@@ -15,21 +15,24 @@ import qualified TAC as T
 
 {- HLINT ignore "Use newtype instead of data" -}
 data Program
-  = Program Function
+  = Program [Function]
   deriving (Show)
 
 data Function
-  = Function String [Instruction]
+  = Function String [Operand] [Instruction]
   deriving (Show)
 
 data Instruction
   = TwoOp TwoOperandInstruction Operand Operand
   | OneOp OneOperandInstruction Operand
   | AllocateStack Int
+  | DeallocateStack Int
   | Jmp String
   | JmpCC Condition String
   | SetCC Condition Operand
   | Label String
+  | Push Operand
+  | Call String
   | Ret
   | Cdq
   deriving (Show)
@@ -70,20 +73,54 @@ data Binop
 data Reg
   = AX
   | CX
-  | CL -- Todo remove when types are implemented
   | DX
+  | BX
+  | SP
+  | BP
+  | SI
+  | DI
+  | R8
+  | R9
   | R10
   | R11
   deriving (Show, Eq, Ord)
+
+data RegSize
+  = Reg1
+  | Reg4
+  | Reg8
 
 translateTACtoASM :: T.Program -> Program
 translateTACtoASM = fixInstructions . replacePseudo . translateProgram
   where
     translateProgram :: T.Program -> Program
-    translateProgram (T.Program fun) = Program (translateFunction fun)
+    translateProgram (T.Program functions) = Program (map translateFunction functions)
 
     translateFunction :: T.Function -> Function
-    translateFunction (T.Function name stmts) = Function name $ concatMap translateInstruction stmts
+    translateFunction (T.Function name params stmts) = Function name params' instructions
+      where
+        instructions =
+          copyRegisterParameters
+            ++ copyStackParameters
+            ++ body_instructions
+            ++ cleanupStack
+
+        params' = map translateValue params
+
+        argRegisters :: [Reg]
+        argRegisters = [DI, SI, DX, CX, R8, R9]
+        (registerArgs, stackArgs) = splitAt (length argRegisters) params'
+        copyRegisterParameters = zipWith movarg registerArgs argRegisters
+        copyStackParameters = zipWith movstk stackArgs [16, 24 ..]
+
+        movarg :: Operand -> Reg -> Instruction
+        movarg arg reg = TwoOp Mov (Register reg) arg
+
+        movstk :: Operand -> Int -> Instruction
+        movstk arg offset = TwoOp Mov (Stack offset) arg
+
+        body_instructions = concatMap translateInstruction stmts
+        cleanupStack = []
 
     translateInstruction :: T.Instruction -> [Instruction]
     translateInstruction (T.Return value) =
@@ -136,6 +173,33 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
       [ TwoOp Cmp (Imm 0) (translateValue value),
         JmpCC NE label
       ]
+    translateInstruction (T.FunctionCall name args value) =
+      allocateStackSpace
+        ++ passRegisterArguments
+        ++ passStackArguments
+        ++ [Call name]
+        ++ deallocateStackSpace
+        ++ saveReturnValue
+      where
+        argRegisters :: [Reg]
+        argRegisters = [DI, SI, DX, CX, R8, R9]
+        (registerArgs, stackArgs) = splitAt (length argRegisters) args
+        stackPadding = 8 * mod (length stackArgs) 2
+        cleanupSize = stackPadding + 8 * length stackArgs
+        {- HLINT ignore "Use list comprehension" -}
+        allocateStackSpace = if stackPadding == 0 then [] else [AllocateStack stackPadding]
+        deallocateStackSpace = if cleanupSize == 0 then [] else [DeallocateStack cleanupSize]
+        passRegisterArguments = zipWith movarg registerArgs argRegisters
+        passStackArguments = concatMap (movstk . translateValue) (reverse stackArgs)
+        saveReturnValue = [TwoOp Mov (Register AX) (translateValue value)]
+
+        movarg :: T.Value -> Reg -> Instruction
+        movarg val reg = TwoOp Mov (translateValue val) (Register reg)
+
+        movstk :: Operand -> [Instruction]
+        movstk op@(Imm _) = [Push op]
+        movstk op@(Register _) = [Push op]
+        movstk op = [TwoOp Mov op (Register AX), Push (Register AX)]
 
     translateUnary :: UnaryOperator -> OneOperandInstruction
     translateUnary Complement = Not
@@ -206,25 +270,30 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
     replacePseudoIns (SetCC condition dst) = do
       dst' <- replacePseudoOp dst
       return (SetCC condition dst')
+    replacePseudoIns (Push src) = do
+      src' <- replacePseudoOp src
+      return (Push src')
     replacePseudoIns any = return any
 
     replacePseudoFun :: Function -> TransM Function
-    replacePseudoFun (Function name instructions) = do
+    replacePseudoFun (Function name args instructions) = do
       put (TransState {stackSize = 0, pseudoMap = Data.Map.empty}) -- start with an empty mapping
+      args' <- mapM replacePseudoOp args
       instructions' <- mapM replacePseudoIns instructions
       state <- get
-      return (Function name (AllocateStack (stackSize state) : instructions'))
+      let size = 16 * quot (stackSize state + 15) 16
+      return (Function name args' (AllocateStack size : instructions'))
 
     replacePseudoProg :: Program -> TransM Program
-    replacePseudoProg (Program fun) = do
-      fun' <- replacePseudoFun fun
-      return (Program fun')
+    replacePseudoProg (Program functions) = do
+      functions' <- mapM replacePseudoFun functions
+      return (Program functions')
 
 fixInstructions :: Program -> Program
-fixInstructions (Program fun) = Program (fixInstructionsFun fun)
+fixInstructions (Program fun) = Program (map fixInstructionsFun fun)
   where
     fixInstructionsFun :: Function -> Function
-    fixInstructionsFun (Function name instructions) = Function name (concatMap fixInstr instructions)
+    fixInstructionsFun (Function name args instructions) = Function name args (concatMap fixInstr instructions)
 
     fixInstr :: Instruction -> [Instruction]
     fixInstr (TwoOp Mul src (Stack b)) =
@@ -235,12 +304,12 @@ fixInstructions (Program fun) = Program (fixInstructionsFun fun)
     fixInstr (TwoOp ShLeft (Imm n) dst) = [TwoOp ShLeft (Imm n) dst]
     fixInstr (TwoOp ShLeft src dst) =
       [ TwoOp Mov src (Register CX),
-        TwoOp ShLeft (Register CL) dst
+        TwoOp ShLeft (Register CX) dst
       ]
     fixInstr (TwoOp ShRight (Imm n) dst) = [TwoOp ShRight (Imm n) dst]
     fixInstr (TwoOp ShRight src dst) =
       [ TwoOp Mov src (Register CX),
-        TwoOp ShRight (Register CL) dst
+        TwoOp ShRight (Register CX) dst
       ]
     fixInstr (TwoOp Cmp src (Imm n)) =
       [ TwoOp Mov (Imm n) (Register R11),
@@ -257,21 +326,26 @@ fixInstructions (Program fun) = Program (fixInstructionsFun fun)
     fixInstr ins = [ins]
 
 emitProgram :: Program -> [String]
-emitProgram (Program fun) = emitFunction fun ++ [".section .note.GNU-stack,\"\",@progbits"]
+emitProgram (Program fun) = concatMap emitFunction fun ++ [".section .note.GNU-stack,\"\",@progbits"]
   where
     emitFunction :: Function -> [String]
-    emitFunction (Function name instructions) = [".globl " ++ name, name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ map emitInstruction instructions
+    emitFunction (Function name _args instructions) = [".globl " ++ name, name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ map emitInstruction instructions
 
     emitInstruction :: Instruction -> String
-    emitInstruction (TwoOp op src dst) = "    " ++ twoOp op ++ " " ++ emitOperand src ++ ", " ++ emitOperand dst
-    emitInstruction (OneOp op src) = "    " ++ oneOp op ++ " " ++ emitOperand src
+    emitInstruction (TwoOp ShLeft src dst) = "    " ++ twoOp ShLeft ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand Reg4 dst
+    emitInstruction (TwoOp ShRight src dst) = "    " ++ twoOp ShRight ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand Reg4 dst
+    emitInstruction (TwoOp op src dst) = "    " ++ twoOp op ++ " " ++ emitOperand Reg4 src ++ ", " ++ emitOperand Reg4 dst
+    emitInstruction (OneOp op src) = "    " ++ oneOp op ++ " " ++ emitOperand Reg4 src
     emitInstruction (AllocateStack n) = "    subq $" ++ show n ++ ", %rsp"
+    emitInstruction (DeallocateStack n) = "    addq $" ++ show n ++ ", %rsp"
     emitInstruction Ret = "    movq %rbp, %rsp\n    popq %rbp\n    ret"
     emitInstruction Cdq = "    cdq"
     emitInstruction (Jmp label) = "    jmp " ++ label
     emitInstruction (Label label) = label ++ ":"
     emitInstruction (JmpCC condition label) = "    j" ++ cond condition ++ " " ++ label
-    emitInstruction (SetCC condition dst) = "    set" ++ cond condition ++ " " ++ emitOperand dst
+    emitInstruction (SetCC condition dst) = "    set" ++ cond condition ++ " " ++ emitOperand Reg4 dst
+    emitInstruction (Push src) = "    pushq " ++ emitOperand Reg8 src
+    emitInstruction (Call name) = "    call " ++ name
 
     twoOp :: TwoOperandInstruction -> String
     twoOp Mov = "movl"
@@ -298,13 +372,43 @@ emitProgram (Program fun) = emitFunction fun ++ [".section .note.GNU-stack,\"\",
     cond L = "l"
     cond LE = "le"
 
-    emitOperand :: Operand -> String
-    emitOperand (Imm n) = "$" ++ show n
-    emitOperand (Register AX) = "%eax"
-    emitOperand (Register CX) = "%ecx"
-    emitOperand (Register CL) = "%cl"
-    emitOperand (Register DX) = "%edx"
-    emitOperand (Register R10) = "%r10d"
-    emitOperand (Register R11) = "%r11d"
-    emitOperand (Stack n) = show n ++ "(%rbp)"
-    emitOperand (Pseudo name) = error $ "emitOperand: unexpected Pseudo operand: " ++ name
+    emitOperand :: RegSize -> Operand -> String
+    emitOperand _ (Imm n) = "$" ++ show n
+    emitOperand _ (Stack n) = show n ++ "(%rbp)"
+    emitOperand _ (Pseudo name) = error $ "emitOperand: unexpected Pseudo operand: " ++ name
+    emitOperand Reg1 (Register AX) = "%al"
+    emitOperand Reg1 (Register CX) = "%cl"
+    emitOperand Reg1 (Register DX) = "%dl"
+    emitOperand Reg1 (Register BX) = "%bl"
+    emitOperand Reg1 (Register SP) = "%spl"
+    emitOperand Reg1 (Register BP) = "%bpl"
+    emitOperand Reg1 (Register SI) = "%sil"
+    emitOperand Reg1 (Register DI) = "%dil"
+    emitOperand Reg1 (Register R8) = "%r8b"
+    emitOperand Reg1 (Register R9) = "%r9b"
+    emitOperand Reg1 (Register R10) = "%r10b"
+    emitOperand Reg1 (Register R11) = "%r11b"
+    emitOperand Reg4 (Register AX) = "%eax"
+    emitOperand Reg4 (Register CX) = "%ecx"
+    emitOperand Reg4 (Register DX) = "%edx"
+    emitOperand Reg4 (Register BX) = "%ebx"
+    emitOperand Reg4 (Register SP) = "%esp"
+    emitOperand Reg4 (Register BP) = "%ebp"
+    emitOperand Reg4 (Register SI) = "%esi"
+    emitOperand Reg4 (Register DI) = "%edi"
+    emitOperand Reg4 (Register R8) = "%r8d"
+    emitOperand Reg4 (Register R9) = "%r9d"
+    emitOperand Reg4 (Register R10) = "%r10d"
+    emitOperand Reg4 (Register R11) = "%r11d"
+    emitOperand Reg8 (Register AX) = "%rax"
+    emitOperand Reg8 (Register CX) = "%rcx"
+    emitOperand Reg8 (Register DX) = "%rdx"
+    emitOperand Reg8 (Register BX) = "%rbx"
+    emitOperand Reg8 (Register SP) = "%rsp"
+    emitOperand Reg8 (Register BP) = "%rbp"
+    emitOperand Reg8 (Register SI) = "%rsi"
+    emitOperand Reg8 (Register DI) = "%rdi"
+    emitOperand Reg8 (Register R8) = "%r8"
+    emitOperand Reg8 (Register R9) = "%r9"
+    emitOperand Reg8 (Register R10) = "%r10"
+    emitOperand Reg8 (Register R11) = "%r11"

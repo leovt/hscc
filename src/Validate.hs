@@ -1,6 +1,8 @@
 module Validate
   ( validate,
     SwitchLabels (..),
+    SymbolTable (..),
+    SymbolInfo (..),
   )
 where
 

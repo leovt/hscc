@@ -9,21 +9,23 @@ where
 
 import Control.Monad.State
 import qualified Data.Map
-import Data.Maybe (fromJust)
+import Data.Maybe (catMaybes, fromJust)
 import Parser
   ( BinaryOperator,
     UnaryOperator,
   )
 import qualified Parser as P
-import Validate (SwitchLabels (..))
+import Validate
+  ( SwitchLabels (..),
+  )
 
 {- HLINT ignore "Use newtype instead of data" -}
 data Program
-  = Program Function
+  = Program [Function]
   deriving (Show)
 
 data Function
-  = Function String [Instruction]
+  = Function String [Value] [Instruction]
   deriving (Show)
 
 data Instruction
@@ -35,6 +37,7 @@ data Instruction
   | JumpIfZero String Value
   | JumpIfNotZero String Value
   | Label String
+  | FunctionCall String [Value] Value
   deriving (Show)
 
 data Value
@@ -70,16 +73,15 @@ translate program nextID' = evalState (translateProgram program) initState
         }
 
     translateProgram :: P.Program -> TransM Program
-    translateProgram (P.Program [fun]) = do
-      fun' <- translateFunction fun
-      return (Program fun')
-    translateProgram _ = error "Only single-function programs are supported."
+    translateProgram (P.Program fun) = do
+      fun' <- mapM translateFunction fun
+      return (Program (catMaybes fun'))
 
-    translateFunction :: P.Function -> TransM Function
-    translateFunction (P.Function name _ {- TODO: handle params -} (Just body)) = do
+    translateFunction :: P.Function -> TransM (Maybe Function)
+    translateFunction (P.Function name params (Just body)) = do
       instructions <- translateBlock body
-      return (Function name (instructions ++ [Return (Constant 0)]))
-    translateFunction (P.Function _ _ Nothing) = error "Function body is missing."
+      return $ Just (Function name (map Variable params) (instructions ++ [Return (Constant 0)]))
+    translateFunction (P.Function _ _ Nothing) = return Nothing
 
     translateBlock :: P.Block -> TransM [Instruction]
     translateBlock (P.Block items) = concat <$> mapM translateBlockItem items
@@ -392,4 +394,9 @@ translate program nextID' = evalState (translateProgram program) initState
               ++ else_instructions
               ++ [Copy else_value destination, Label end_label]
       return (instructions, destination)
-    translateExpression (P.FunctionCall _ _) = error "Function calls are not supported in TAC translation yet."
+    translateExpression (P.FunctionCall name args) = do
+      pairs <- mapM translateExpression args
+      let (instructions, args') = unzip pairs
+      varid <- newId "tmp.cond"
+      let destination = Variable varid
+      return (concat instructions ++ [FunctionCall name args' destination], destination)
