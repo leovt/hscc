@@ -12,6 +12,8 @@ module Parser
     BinaryOperator (..),
     Label (..),
     ForInitializer (..),
+    StorageClass (..),
+    ScopeLevel (..),
   )
 where
 
@@ -45,11 +47,11 @@ data Declaration
   deriving (Show)
 
 data VariableDeclaration
-  = VariableDeclaration String (Maybe Expression) StorageClass
+  = VariableDeclaration String (Maybe Expression) StorageClass ScopeLevel
   deriving (Show)
 
 data FunctionDeclaration
-  = FunctionDeclaration String [String] (Maybe Block) StorageClass
+  = FunctionDeclaration String [String] (Maybe Block) StorageClass ScopeLevel
   deriving (Show)
 
 data Label
@@ -62,7 +64,12 @@ data StorageClass
   = StorageStatic
   | StorageExtern
   | StorageNone
-  deriving (Show)
+  deriving (Show, Eq)
+
+data ScopeLevel
+  = FileScope
+  | BlockScope
+  deriving (Show, Eq)
 
 data Statement
   = ReturnStatement Expression
@@ -194,13 +201,13 @@ parseProgram tokens = parseProgramSeq tokens []
     parseProgramSeq :: [Token] -> [Declaration] -> Either String Program
     parseProgramSeq [] acc = Right (Program (reverse acc))
     parseProgramSeq tokens acc = do
-      suite <- maybeParseDeclaration tokens
+      suite <- maybeParseDeclaration FileScope tokens
       case suite of
         Nothing -> Left "expected declaration"
         Just (fun, rest) -> parseProgramSeq rest (fun : acc)
 
-parseFunction :: String -> StorageClass -> [Token] -> Either String (FunctionDeclaration, [Token])
-parseFunction name sclass tail = do
+parseFunction :: ScopeLevel -> String -> StorageClass -> [Token] -> Either String (FunctionDeclaration, [Token])
+parseFunction scope name sclass tail = do
   let parse_params :: [String] -> [Token] -> Either String ([String], [Token])
       parse_params [] (TokKeyVoid : TokCloseParen : rest) = return ([], rest)
       parse_params [] (TokCloseParen : rest) = return ([], rest)
@@ -211,8 +218,8 @@ parseFunction name sclass tail = do
   case rest of
     TokOpenBrace : rest' -> do
       (block, rest'') <- parseBlock (TokOpenBrace : rest')
-      return (FunctionDeclaration name params (Just block) sclass, rest'')
-    TokSemicolon : rest -> return (FunctionDeclaration name params Nothing sclass, rest)
+      return (FunctionDeclaration name params (Just block) sclass scope, rest'')
+    TokSemicolon : rest -> return (FunctionDeclaration name params Nothing sclass scope, rest)
     _ -> Left "expected function body or ';' after function declaration"
 
 parseBlock :: [Token] -> Either String (Block, [Token])
@@ -229,7 +236,7 @@ parseBlockitems tokens = parse_blockitems_seq ([], tokens)
     parse_blockitems_seq :: ([BlockItem], [Token]) -> Either String ([BlockItem], [Token])
     parse_blockitems_seq (items, TokCloseBrace : tokens) = Right (items, TokCloseBrace : tokens)
     parse_blockitems_seq (items, tokens) = do
-      suite <- maybeParseDeclaration tokens
+      suite <- maybeParseDeclaration BlockScope tokens
       case suite of
         Just (decl, rest) -> parse_blockitems_seq (items ++ [Decl decl], rest)
         Nothing -> do
@@ -325,7 +332,7 @@ parseStatement (TokKeyFor : TokOpenParen : tail) = do
   let parseInitializer :: [Token] -> Either String (Maybe ForInitializer, [Token])
       parseInitializer (TokSemicolon : tail) = return (Nothing, tail)
       parseInitializer tokens = do
-        decl <- maybeParseDeclaration tokens
+        decl <- maybeParseDeclaration BlockScope tokens
         case decl of
           Just (FunDecl _, _) -> Left "no function declaration in for initializer allowed."
           Just (d, rest) -> return (Just (ForInitDecl d), rest)
@@ -374,14 +381,14 @@ parseStatement tokens = do
     TokSemicolon : rest' -> return (Just (ExpressionStatement expr, rest'))
     _ -> Left "expected ';' after expression statement"
 
-maybeParseDeclaration :: [Token] -> Either String (Maybe (Declaration, [Token]))
-maybeParseDeclaration (tok : rest) =
+maybeParseDeclaration :: ScopeLevel -> [Token] -> Either String (Maybe (Declaration, [Token]))
+maybeParseDeclaration scope (tok : rest) =
   if isSpecifier tok
     then do
-      decl <- parseDeclaration (tok : rest)
+      decl <- parseDeclaration scope (tok : rest)
       return (Just decl)
     else return Nothing
-maybeParseDeclaration _ = return Nothing
+maybeParseDeclaration _ _ = return Nothing
 
 decodeSpecifiers :: [Token] -> Either String (CType, StorageClass)
 decodeSpecifiers specifiers = do
@@ -401,27 +408,27 @@ decodeSpecifiers specifiers = do
     _ -> Left $ "Illegal Type " ++ show types
   return (ctype, storage')
 
-parseDeclaration :: [Token] -> Either String (Declaration, [Token])
-parseDeclaration tokens = do
+parseDeclaration :: ScopeLevel -> [Token] -> Either String (Declaration, [Token])
+parseDeclaration scope tokens = do
   let (specifiers, rest) = span isSpecifier tokens
   (_ctype, sclass) <- decodeSpecifiers specifiers
   case rest of
     ((TokIdent name) : TokOpenParen : rest) -> do
-      (decl, rest') <- parseFunction name sclass rest
+      (decl, rest') <- parseFunction scope name sclass rest
       return (FunDecl decl, rest')
     ((TokIdent name) : rest) -> do
-      (decl, rest') <- parseVariableDeclaration name sclass rest
+      (decl, rest') <- parseVariableDeclaration scope name sclass rest
       return (VarDecl decl, rest')
     _ -> Left "expected declaration."
 
-parseVariableDeclaration :: String -> StorageClass -> [Token] -> Either String (VariableDeclaration, [Token])
-parseVariableDeclaration name sclass tokens = case tokens of
+parseVariableDeclaration :: ScopeLevel -> String -> StorageClass -> [Token] -> Either String (VariableDeclaration, [Token])
+parseVariableDeclaration scope name sclass tokens = case tokens of
   (TokEqual : rest) -> do
     (expr, rest') <- parseExpression rest
     case rest' of
-      TokSemicolon : rest'' -> return (VariableDeclaration name (Just expr) sclass, rest'')
+      TokSemicolon : rest'' -> return (VariableDeclaration name (Just expr) sclass scope, rest'')
       _ -> Left "expected ';' after variable declaration"
-  (TokSemicolon : rest) -> return (VariableDeclaration name Nothing sclass, rest)
+  (TokSemicolon : rest) -> return (VariableDeclaration name Nothing sclass scope, rest)
   _ -> Left "expected ';' or '=' after variable declaration"
 
 parseFactor :: [Token] -> Either String (Expression, [Token])

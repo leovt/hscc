@@ -8,23 +8,25 @@ module PrettyAst
 where
 
 import Data.List (intercalate)
+import qualified Data.Map as Map
 import Parser
-import Prettyprinter (Doc, Pretty (pretty), hardline, nest, parens, pretty, vsep, (<+>), (<>))
+import Prettyprinter (Doc, Pretty (pretty), brackets, hardline, nest, parens, pretty, vsep, (<+>), (<>))
+import Validate (SymbolInfo (..), SymbolTable (..))
 
 instance Pretty Program where
   pretty (Program f) = pretty f
 
 instance Pretty FunctionDeclaration where
-  pretty (FunctionDeclaration name params (Just block) storage_class) =
+  pretty (FunctionDeclaration name params (Just block) storage_class scope) =
     pretty "Function"
       <+> pretty name
-      <+> pretty (show storage_class)
+      <+> brackets (pretty (show storage_class) <+> pretty (show scope))
       <+> parens (pretty (intercalate ", " params))
       <+> pretty block
-  pretty (FunctionDeclaration name params Nothing storage_class) =
+  pretty (FunctionDeclaration name params Nothing storage_class scope) =
     pretty "Function"
       <+> pretty name
-      <+> pretty (show storage_class)
+      <+> brackets (pretty (show storage_class) <+> pretty (show scope))
       <+> parens (pretty (intercalate ", " params))
 
 instance Pretty Declaration where
@@ -83,3 +85,12 @@ instance Pretty Statement where
 
 instance Pretty Expression where
   pretty expr = pretty (show expr)
+
+instance Pretty SymbolInfo where
+  pretty (SymbolInfo t attrs) = pretty (show t ++ " " ++ show attrs)
+
+instance Pretty SymbolTable where
+  pretty (SymbolTable m) =
+    let entries = Map.toList m
+        prettyEntry (name, info) = pretty name <> pretty ":" <+> pretty info
+     in vsep (map prettyEntry entries)

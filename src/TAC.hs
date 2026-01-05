@@ -82,17 +82,17 @@ translate program nextID' = evalState (translateProgram program) initState
     translateDeclaration _ = return Nothing
 
     translateFunction :: P.FunctionDeclaration -> TransM (Maybe Function)
-    translateFunction (P.FunctionDeclaration name params (Just body) _) = do
+    translateFunction (P.FunctionDeclaration name params (Just body) _ _) = do
       instructions <- translateBlock body
       return $ Just (Function name (map Variable params) (instructions ++ [Return (Constant 0)]))
-    translateFunction (P.FunctionDeclaration _ _ Nothing _) = return Nothing
+    translateFunction (P.FunctionDeclaration _ _ Nothing _ _) = return Nothing
 
     translateBlock :: P.Block -> TransM [Instruction]
     translateBlock (P.Block items) = concat <$> mapM translateBlockItem items
 
     translateBlockItem :: P.BlockItem -> TransM [Instruction]
     translateBlockItem (P.Stmt s) = translateStatement s
-    translateBlockItem (P.Decl (P.VarDecl (P.VariableDeclaration name (Just expr) _))) = do
+    translateBlockItem (P.Decl (P.VarDecl (P.VariableDeclaration name (Just expr) _ _))) = do
       (instr, _value) <- translateExpression (P.Binary P.Assignment (P.Variable name) expr)
       return instr
     translateBlockItem (P.Decl _) = return []
@@ -173,7 +173,7 @@ translate program nextID' = evalState (translateProgram program) initState
         Just (P.ForInitExpr expr) -> do
           (instr, _value) <- translateExpression expr
           return instr
-        Just (P.ForInitDecl (P.VarDecl (P.VariableDeclaration name (Just expr) _))) -> do
+        Just (P.ForInitDecl (P.VarDecl (P.VariableDeclaration name (Just expr) _ _))) -> do
           (instr, _value) <- translateExpression (P.Binary P.Assignment (P.Variable name) expr)
           return instr
         Just (P.ForInitDecl _) -> return []
