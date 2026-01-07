@@ -14,16 +14,18 @@ import TAC
 instance Pretty Program where
   pretty (Program f) = pretty f
 
-instance Pretty Function where
-  pretty (Function name args instrs) =
+instance Pretty TopLevel where
+  pretty (Function name global args instrs) =
     pretty "Function"
       <+> pretty name
+      <+> pretty (if global then "(global)" else "(local)")
       <+> parens (pretty $ intercalate ", " (map show args))
       <+> pretty "{"
       <> hardline
       <> vsep (map pretty instrs)
       <> hardline
       <> pretty "}"
+  pretty other = pretty (show other)
 
 instance Pretty Instruction where
   -- use the default `show` representation for instructions

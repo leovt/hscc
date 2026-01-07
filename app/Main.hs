@@ -55,7 +55,7 @@ main = do
     putStrLn (renderString (layoutPretty defaultLayoutOptions doc))
     exitSuccess
 
-  let tac = TAC.translate validated_ast nextID
+  let tac = TAC.translate validated_ast symbolTable nextID
 
   when (tackyOnly options) $ do
     let doc = pretty tac

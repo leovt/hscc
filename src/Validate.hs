@@ -3,6 +3,8 @@ module Validate
     SwitchLabels (..),
     SymbolTable (..),
     SymbolInfo (..),
+    SymbolAttributes (..),
+    Initializer (..),
   )
 where
 

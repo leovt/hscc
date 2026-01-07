@@ -2,7 +2,7 @@ module AsmAst
   ( translateTACtoASM,
     emitProgram,
     Program (..),
-    Function (..),
+    TopLevel (..),
     Instruction (..),
   )
 where
@@ -15,11 +15,12 @@ import qualified TAC as T
 
 {- HLINT ignore "Use newtype instead of data" -}
 data Program
-  = Program [Function]
+  = Program [TopLevel]
   deriving (Show)
 
-data Function
-  = Function String [Instruction]
+data TopLevel
+  = Function String Bool [Instruction]
+  | StaticVariable String Bool Int
   deriving (Show)
 
 data Instruction
@@ -59,11 +60,16 @@ data TwoOperandInstruction
 data Condition = E | NE | G | GE | L | LE
   deriving (Show)
 
+data MemoryOperand
+  = Stack Int
+  | Data String
+  deriving (Show, Eq, Ord)
+
 data Operand
   = Imm Int
   | Register Reg
   | Pseudo String
-  | Stack Int
+  | Memory MemoryOperand
   deriving (Show, Eq, Ord)
 
 data Binop
@@ -96,8 +102,8 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
     translateProgram :: T.Program -> Program
     translateProgram (T.Program functions) = Program (map translateFunction functions)
 
-    translateFunction :: T.Function -> Function
-    translateFunction (T.Function name params stmts) = Function name instructions
+    translateFunction :: T.TopLevel -> TopLevel
+    translateFunction (T.Function name global params stmts) = Function name global instructions
       where
         instructions =
           copyRegisterParameters
@@ -117,10 +123,11 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
         movarg arg reg = TwoOp Mov (Register reg) arg
 
         movstk :: Operand -> Int -> Instruction
-        movstk arg offset = TwoOp Mov (Stack offset) arg
+        movstk arg offset = TwoOp Mov (Memory $ Stack offset) arg
 
         body_instructions = concatMap translateInstruction stmts
         cleanupStack = []
+    translateFunction (T.StaticVariable name global init) = StaticVariable name global init
 
     translateInstruction :: T.Instruction -> [Instruction]
     translateInstruction (T.Return value) =
@@ -234,7 +241,8 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
 
     translateValue :: T.Value -> Operand
     translateValue (T.Constant c) = Imm c
-    translateValue (T.Variable name) = Pseudo name
+    translateValue (T.Variable False name) = Pseudo name
+    translateValue (T.Variable True name) = Memory $ Data name
 
 data TransState = TransState
   { stackSize :: Int,
@@ -254,7 +262,7 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
         Nothing -> do
           -- Compute a new Stack operand, e.g., Stack n where n = current map size
           let n = stackSize state + 4
-          let new = Stack (-n)
+          let new = Memory $ Stack (-n)
           put TransState {stackSize = n, pseudoMap = Data.Map.insert (Pseudo name) new (pseudoMap state)}
           return new
     replacePseudoOp op = return op
@@ -275,13 +283,14 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
       return (Push src')
     replacePseudoIns any = return any
 
-    replacePseudoFun :: Function -> TransM Function
-    replacePseudoFun (Function name instructions) = do
+    replacePseudoFun :: TopLevel -> TransM TopLevel
+    replacePseudoFun (Function name global instructions) = do
       put (TransState {stackSize = 0, pseudoMap = Data.Map.empty}) -- start with an empty mapping
       instructions' <- mapM replacePseudoIns instructions
       state <- get
       let size = 16 * quot (stackSize state + 15) 16
-      return (Function name (AllocateStack size : instructions'))
+      return (Function name global (AllocateStack size : instructions'))
+    replacePseudoFun other = return other
 
     replacePseudoProg :: Program -> TransM Program
     replacePseudoProg (Program functions) = do
@@ -291,14 +300,15 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
 fixInstructions :: Program -> Program
 fixInstructions (Program fun) = Program (map fixInstructionsFun fun)
   where
-    fixInstructionsFun :: Function -> Function
-    fixInstructionsFun (Function name instructions) = Function name (concatMap fixInstr instructions)
+    fixInstructionsFun :: TopLevel -> TopLevel
+    fixInstructionsFun (Function name global instructions) = Function name global (concatMap fixInstr instructions)
+    fixInstructionsFun other = other
 
     fixInstr :: Instruction -> [Instruction]
-    fixInstr (TwoOp Mul src (Stack b)) =
-      [ TwoOp Mov (Stack b) (Register R11),
+    fixInstr (TwoOp Mul src dst@(Memory _)) =
+      [ TwoOp Mov dst (Register R11),
         TwoOp Mul src (Register R11),
-        TwoOp Mov (Register R11) (Stack b)
+        TwoOp Mov (Register R11) dst
       ]
     fixInstr (TwoOp ShLeft (Imm n) dst) = [TwoOp ShLeft (Imm n) dst]
     fixInstr (TwoOp ShLeft src dst) =
@@ -314,9 +324,9 @@ fixInstructions (Program fun) = Program (map fixInstructionsFun fun)
       [ TwoOp Mov (Imm n) (Register R11),
         TwoOp Cmp src (Register R11)
       ]
-    fixInstr (TwoOp op (Stack a) (Stack b)) =
-      [ TwoOp Mov (Stack a) (Register R10),
-        TwoOp op (Register R10) (Stack b)
+    fixInstr (TwoOp op src@(Memory _) dst@(Memory _)) =
+      [ TwoOp Mov src (Register R10),
+        TwoOp op (Register R10) dst
       ]
     fixInstr (OneOp Div (Imm n)) =
       [ TwoOp Mov (Imm n) (Register R10),
@@ -325,10 +335,15 @@ fixInstructions (Program fun) = Program (map fixInstructionsFun fun)
     fixInstr ins = [ins]
 
 emitProgram :: Program -> [String]
-emitProgram (Program fun) = concatMap emitFunction fun ++ [".section .note.GNU-stack,\"\",@progbits"]
+emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-stack,\"\",@progbits"]
   where
-    emitFunction :: Function -> [String]
-    emitFunction (Function name instructions) = [".globl " ++ name, name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ map emitInstruction instructions
+    emitTopLevel :: TopLevel -> [String]
+    emitTopLevel (Function name global instructions) =
+      let asmglobal = if global then [".globl " ++ name] else []
+       in asmglobal ++ [name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ map emitInstruction instructions
+    emitTopLevel (StaticVariable name global init) =
+      let asmglobal = if global then [".globl " ++ name] else []
+       in asmglobal ++ [".data", ".align 4", name ++ ":", "    .long " ++ show init, ".text"]
 
     emitInstruction :: Instruction -> String
     emitInstruction (TwoOp ShLeft src dst) = "    " ++ twoOp ShLeft ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand Reg4 dst
@@ -373,7 +388,8 @@ emitProgram (Program fun) = concatMap emitFunction fun ++ [".section .note.GNU-s
 
     emitOperand :: RegSize -> Operand -> String
     emitOperand _ (Imm n) = "$" ++ show n
-    emitOperand _ (Stack n) = show n ++ "(%rbp)"
+    emitOperand _ (Memory (Stack n)) = show n ++ "(%rbp)"
+    emitOperand _ (Memory (Data name)) = name ++ "(%rip)"
     emitOperand _ (Pseudo name) = error $ "emitOperand: unexpected Pseudo operand: " ++ name
     emitOperand Reg1 (Register AX) = "%al"
     emitOperand Reg1 (Register CX) = "%cl"
