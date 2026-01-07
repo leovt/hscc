@@ -1,13 +1,14 @@
 module TAC
   ( translate,
     Program (..),
-    Function (..),
+    TopLevel (..),
     Instruction (..),
     Value (..),
   )
 where
 
 import Control.Monad.State
+import Data.Map (toList)
 import qualified Data.Map
 import Data.Maybe (catMaybes, fromJust)
 import Parser
@@ -16,16 +17,21 @@ import Parser
   )
 import qualified Parser as P
 import Validate
-  ( SwitchLabels (..),
+  ( Initializer (..),
+    SwitchLabels (..),
+    SymbolAttributes (..),
+    SymbolInfo (..),
+    SymbolTable (..),
   )
 
 {- HLINT ignore "Use newtype instead of data" -}
 data Program
-  = Program [Function]
+  = Program [TopLevel]
   deriving (Show)
 
-data Function
-  = Function String [Value] [Instruction]
+data TopLevel
+  = Function String Bool [Value] [Instruction]
+  | StaticVariable String Bool Int
   deriving (Show)
 
 data Instruction
@@ -42,7 +48,7 @@ data Instruction
 
 data Value
   = Constant Int
-  | Variable String
+  | Variable Bool String {- static duration, name -}
   deriving (Show)
 
 data TransState = TransState
@@ -61,8 +67,8 @@ newId prefix = do
   put state {nextID = n + 1}
   return $ prefix ++ "." ++ show n
 
-translate :: P.Program -> Int -> Program
-translate program nextID' = evalState (translateProgram program) initState
+translate :: P.Program -> SymbolTable -> Int -> Program
+translate program (SymbolTable symtab) nextID' = evalState (translateProgram program) initState
   where
     initState =
       TransState
@@ -73,22 +79,39 @@ translate program nextID' = evalState (translateProgram program) initState
         }
 
     translateProgram :: P.Program -> TransM Program
-    translateProgram (P.Program fun) = do
-      fun' <- mapM translateFunction fun
-      return (Program (catMaybes fun'))
+    translateProgram (P.Program decls) = do
+      let staticVariables = map translateSymbol (toList symtab)
+      functions <- mapM translateDeclaration decls
+      return (Program (catMaybes (staticVariables ++ functions)))
 
-    translateFunction :: P.Function -> TransM (Maybe Function)
-    translateFunction (P.Function name params (Just body)) = do
+    translateSymbol :: (String, SymbolInfo) -> Maybe TopLevel
+    translateSymbol (name, SymbolInfo _type (StaticVariableAttr (Initial init) global)) =
+      Just $ StaticVariable name global init
+    translateSymbol (name, SymbolInfo _type (StaticVariableAttr Tentative global)) =
+      Just $ StaticVariable name global 0
+    translateSymbol _ = Nothing
+
+    translateDeclaration :: P.Declaration -> TransM (Maybe TopLevel)
+    translateDeclaration (P.FunDecl fun) = translateFunction fun
+    translateDeclaration _ = return Nothing
+
+    translateFunction :: P.FunctionDeclaration -> TransM (Maybe TopLevel)
+    translateFunction (P.FunctionDeclaration name params (Just body) _ _) = do
       instructions <- translateBlock body
-      return $ Just (Function name (map Variable params) (instructions ++ [Return (Constant 0)]))
-    translateFunction (P.Function _ _ Nothing) = return Nothing
+      let global = case Data.Map.lookup name symtab of
+            Nothing -> error $ "symbol not found " ++ name
+            Just (SymbolInfo _type (FunctionAttr _ g)) -> g
+            _ -> error $ "symbol a function symbol " ++ name
+      return $ Just (Function name global (map (Variable False) params) (instructions ++ [Return (Constant 0)]))
+    translateFunction (P.FunctionDeclaration _ _ Nothing _ _) = return Nothing
 
     translateBlock :: P.Block -> TransM [Instruction]
     translateBlock (P.Block items) = concat <$> mapM translateBlockItem items
 
     translateBlockItem :: P.BlockItem -> TransM [Instruction]
     translateBlockItem (P.Stmt s) = translateStatement s
-    translateBlockItem (P.Decl (P.VariableDeclaration name (Just expr))) = do
+    translateBlockItem (P.Decl (P.VarDecl (P.VariableDeclaration _ _ P.StorageStatic _))) = return []
+    translateBlockItem (P.Decl (P.VarDecl (P.VariableDeclaration name (Just expr) _ _))) = do
       (instr, _value) <- translateExpression (P.Binary P.Assignment (P.Variable name) expr)
       return instr
     translateBlockItem (P.Decl _) = return []
@@ -169,7 +192,7 @@ translate program nextID' = evalState (translateProgram program) initState
         Just (P.ForInitExpr expr) -> do
           (instr, _value) <- translateExpression expr
           return instr
-        Just (P.ForInitDecl (P.VariableDeclaration name (Just expr))) -> do
+        Just (P.ForInitDecl (P.VarDecl (P.VariableDeclaration name (Just expr) _ _))) -> do
           (instr, _value) <- translateExpression (P.Binary P.Assignment (P.Variable name) expr)
           return instr
         Just (P.ForInitDecl _) -> return []
@@ -225,7 +248,7 @@ translate program nextID' = evalState (translateProgram program) initState
           case_jump (Default, _) = return []
           case_jump (Case n, jump_target) = do
             varid <- newId "tmp"
-            let destination = Variable varid
+            let destination = Variable False varid
             return
               [ Binary P.Equal cond_value (Constant n) destination,
                 JumpIfNotZero jump_target destination
@@ -265,45 +288,49 @@ translate program nextID' = evalState (translateProgram program) initState
     translateExpression :: P.Expression -> TransM ([Instruction], Value)
     translateExpression (P.Constant c) = do
       return ([], Constant c)
-    translateExpression (P.Unary P.PreIncrement (P.Variable name)) = do
+    translateExpression (P.Unary P.PreIncrement var@(P.Variable _)) = do
       varid <- newId "tmp"
-      let destination = Variable varid
+      let destination = Variable False varid
+      (_, var') <- translateExpression var
       return
-        ( [ Binary P.Add (Variable name) (Constant 1) destination,
-            Copy destination (Variable name)
+        ( [ Binary P.Add var' (Constant 1) destination,
+            Copy destination var'
           ],
           destination
         )
-    translateExpression (P.Unary P.PreDecrement (P.Variable name)) = do
+    translateExpression (P.Unary P.PreDecrement var@(P.Variable _)) = do
       varid <- newId "tmp"
-      let destination = Variable varid
+      let destination = Variable False varid
+      (_, var') <- translateExpression var
       return
-        ( [ Binary P.Subtract (Variable name) (Constant 1) destination,
-            Copy destination (Variable name)
+        ( [ Binary P.Subtract var' (Constant 1) destination,
+            Copy destination var'
           ],
           destination
         )
-    translateExpression (P.Unary P.PostIncrement (P.Variable name)) = do
+    translateExpression (P.Unary P.PostIncrement var@(P.Variable _)) = do
       varid <- newId "tmp"
-      let destination = Variable varid
+      let destination = Variable False varid
       varid <- newId "tmp"
-      let newvalue = Variable varid
+      let newvalue = Variable False varid
+      (_, var') <- translateExpression var
       return
-        ( [ Copy (Variable name) destination,
+        ( [ Copy var' destination,
             Binary P.Add destination (Constant 1) newvalue,
-            Copy newvalue (Variable name)
+            Copy newvalue var'
           ],
           destination
         )
-    translateExpression (P.Unary P.PostDecrement (P.Variable name)) = do
+    translateExpression (P.Unary P.PostDecrement var@(P.Variable _)) = do
       varid <- newId "tmp"
-      let destination = Variable varid
+      let destination = Variable False varid
       varid <- newId "tmp"
-      let newvalue = Variable varid
+      let newvalue = Variable False varid
+      (_, var') <- translateExpression var
       return
-        ( [ Copy (Variable name) destination,
+        ( [ Copy var' destination,
             Binary P.Subtract destination (Constant 1) newvalue,
-            Copy newvalue (Variable name)
+            Copy newvalue var'
           ],
           destination
         )
@@ -314,7 +341,7 @@ translate program nextID' = evalState (translateProgram program) initState
     translateExpression (P.Unary op expression) = do
       (instructions, value) <- translateExpression expression
       varid <- newId "tmp"
-      let destination = Variable varid
+      let destination = Variable False varid
       return (instructions ++ [Unary op value destination], destination)
     translateExpression (P.Binary P.LogicAnd left right) = do
       (l_instructions, left') <- translateExpression left
@@ -322,7 +349,7 @@ translate program nextID' = evalState (translateProgram program) initState
       varid <- newId "tmp"
       false_label <- newId "false.label"
       end_label <- newId "end.label"
-      let destination = Variable varid
+      let destination = Variable False varid
       let instructions =
             l_instructions
               ++ [JumpIfZero false_label left']
@@ -341,7 +368,7 @@ translate program nextID' = evalState (translateProgram program) initState
       varid <- newId "tmp"
       true_label <- newId "true.label"
       end_label <- newId "end.label"
-      let destination = Variable varid
+      let destination = Variable False varid
       let instructions =
             l_instructions
               ++ [JumpIfNotZero true_label left']
@@ -354,18 +381,19 @@ translate program nextID' = evalState (translateProgram program) initState
                    Label end_label
                  ]
       return (instructions, destination)
-    translateExpression (P.Binary P.Assignment (P.Variable left) right) = do
+    translateExpression (P.Binary P.Assignment left@(P.Variable _) right) = do
+      (l_instructions, left') <- translateExpression left
       (r_instructions, right') <- translateExpression right
-      return (r_instructions ++ [Copy right' (Variable left)], right')
-    translateExpression (P.Binary (P.CompoundAssignment op) (P.Variable left) right) = do
-      (l_instructions, left') <- translateExpression (P.Variable left)
+      return (l_instructions ++ r_instructions ++ [Copy right' left'], right')
+    translateExpression (P.Binary (P.CompoundAssignment op) left@(P.Variable _) right) = do
+      (l_instructions, left') <- translateExpression left
       (r_instructions, right') <- translateExpression right
       varid <- newId "tmp"
-      let destination = Variable varid
+      let destination = Variable False varid
       return
         ( l_instructions
             ++ r_instructions
-            ++ [Binary op left' right' destination, Copy destination (Variable left)],
+            ++ [Binary op left' right' destination, Copy destination left'],
           destination
         )
     translateExpression (P.Binary P.Assignment _ _) = error "assign to non-variable."
@@ -374,10 +402,16 @@ translate program nextID' = evalState (translateProgram program) initState
       (l_instructions, left') <- translateExpression left
       (r_instructions, right') <- translateExpression right
       varid <- newId "tmp"
-      let destination = Variable varid
+      let destination = Variable False varid
       return (l_instructions ++ r_instructions ++ [Binary op left' right' destination], destination)
     translateExpression (P.Variable name) = do
-      return ([], Variable name)
+      let symbol = case Data.Map.lookup name symtab of
+            Nothing -> error $ "symbol not found: " ++ name
+            Just info -> info
+      case symbol of
+        SymbolInfo _ (StaticVariableAttr _ _) -> return ([], Variable True name)
+        SymbolInfo _ (FunctionAttr _ _) -> error "variable expected, function found."
+        SymbolInfo _ LocalVariableAttr -> return ([], Variable False name)
     translateExpression (P.Conditional condExpr thenExpr elseExpr) = do
       (cond_instructions, cond_value) <- translateExpression condExpr
       else_label <- newId "cond.else"
@@ -385,7 +419,7 @@ translate program nextID' = evalState (translateProgram program) initState
       (then_instructions, then_value) <- translateExpression thenExpr
       (else_instructions, else_value) <- translateExpression elseExpr
       varid <- newId "tmp.cond"
-      let destination = Variable varid
+      let destination = Variable False varid
       let instructions =
             cond_instructions
               ++ [JumpIfZero else_label cond_value]
@@ -398,5 +432,5 @@ translate program nextID' = evalState (translateProgram program) initState
       pairs <- mapM translateExpression args
       let (instructions, args') = unzip pairs
       varid <- newId "tmp.cond"
-      let destination = Variable varid
+      let destination = Variable False varid
       return (concat instructions ++ [FunctionCall name args' destination], destination)

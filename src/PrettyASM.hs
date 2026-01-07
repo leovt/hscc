@@ -13,15 +13,17 @@ import Prettyprinter (Doc, Pretty (pretty), hardline, nest, pretty, sep, vsep, (
 instance Pretty Program where
   pretty (Program f) = pretty f
 
-instance Pretty Function where
-  pretty (Function name instrs) =
+instance Pretty TopLevel where
+  pretty (Function name global instrs) =
     pretty "Function"
       <+> pretty name
+      <+> pretty (if global then "(global)" else "(local)")
       <+> pretty "{"
       <> hardline
       <> vsep (map pretty instrs)
       <> hardline
       <> pretty "}"
+  pretty other = pretty (show other)
 
 instance Pretty Instruction where
   -- labels are unindented; other instructions are shown indented

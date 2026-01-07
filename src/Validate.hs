@@ -3,6 +3,8 @@ module Validate
     SwitchLabels (..),
     SymbolTable (..),
     SymbolInfo (..),
+    SymbolAttributes (..),
+    Initializer (..),
   )
 where
 
@@ -11,6 +13,7 @@ import Control.Monad (unless, when)
 import Control.Monad.Except
 import Control.Monad.State
 import qualified Data.Map
+import Data.Maybe (isJust)
 import Parser
   ( BinaryOperator (Assignment, CompoundAssignment),
     Block (..),
@@ -18,11 +21,14 @@ import Parser
     Declaration (..),
     Expression (..),
     ForInitializer (..),
-    Function (..),
+    FunctionDeclaration (..),
     Label (..),
     Program (..),
+    ScopeLevel (..),
     Statement (..),
+    StorageClass (..),
     UnaryOperator (..),
+    VariableDeclaration (..),
   )
 
 data LabelState
@@ -50,6 +56,7 @@ data ResolutionState = ResolutionState
     allowBreak :: Bool,
     allowContinue :: Bool
   }
+  deriving (Show)
 
 {- HLINT ignore "Use newtype instead of data" -}
 data TypecheckState = TypecheckState
@@ -65,10 +72,22 @@ data SymbolState
   | SymDeclared
   deriving (Show, Eq)
 
+data Initializer
+  = Initial Int
+  | Tentative
+  | NoInitializer
+  deriving (Show, Eq)
+
+data SymbolAttributes
+  = FunctionAttr SymbolState Bool
+  | StaticVariableAttr Initializer Bool
+  | LocalVariableAttr
+  deriving (Show, Eq)
+
 data SymbolInfo
   = SymbolInfo
   { symbolType :: CType,
-    symbolState :: SymbolState
+    symbolAttributes :: SymbolAttributes
   }
   deriving (Show)
 
@@ -98,6 +117,27 @@ resolve program =
           switchLabels = []
         }
 
+    uniqueID :: ResM Int
+    uniqueID = do
+      state <- get
+      let n = nextID state
+      put state {nextID = n + 1}
+      return n
+
+    uqName :: String -> ResM String
+    uqName name = do
+      n <- uniqueID
+      return $ name ++ "." ++ show n
+
+    lookupName :: String -> ResM (Maybe (String, Linkage, Bool))
+    lookupName name = do
+      gets (lookupNameInner True . names)
+      where
+        lookupNameInner _ [] = Nothing
+        lookupNameInner innermost (scope : rest) = case Data.Map.lookup name scope of
+          Just (name', lookup) -> Just (name', lookup, innermost)
+          Nothing -> lookupNameInner False rest
+
     resolveNameDecl :: Linkage -> String -> ResM String
     resolveNameDecl NoLinkage name = do
       state <- get
@@ -125,15 +165,11 @@ resolve program =
 
     resolveName :: String -> ResM String
     resolveName name = do
+      info <- lookupName name
       state <- get
-      case lookupName (names state) of
-        Just (name', _) -> return name'
-        Nothing -> throwError $ "resolveName: not in a context for lookup of `" ++ name ++ "`"
-      where
-        lookupName [] = Nothing
-        lookupName (scope : rest) = case Data.Map.lookup name scope of
-          Just info -> Just info
-          Nothing -> lookupName rest
+      case info of
+        Just (name', _, _) -> return name'
+        Nothing -> throwError $ "resolveName: not in a context for lookup of `" ++ name ++ "`" ++ show state
 
     resolveLabelDecl :: String -> ResM String
     resolveLabelDecl name = do
@@ -172,12 +208,45 @@ resolve program =
             return name'
 
     resolveProgram :: Program -> ResM Program
-    resolveProgram (Program functions) = do
-      functions' <- mapM resolveFunction functions
-      return (Program functions')
+    resolveProgram (Program decls) = do
+      decls' <- mapM resolveDeclaration decls
+      return (Program decls')
 
-    resolveFunction :: Function -> ResM Function
-    resolveFunction (Function name params maybeBody) = do
+    resolveDeclaration :: Declaration -> ResM Declaration
+    resolveDeclaration (VarDecl vdec) = do
+      vdec' <- resolveVariableDeclaration vdec
+      return (VarDecl vdec')
+    resolveDeclaration (FunDecl func) = do
+      func' <- resolveFunctionDeclaration func
+      return (FunDecl func')
+
+    resolveVariableDeclaration :: VariableDeclaration -> ResM VariableDeclaration
+    resolveVariableDeclaration (VariableDeclaration name init sclass scope) = do
+      info <- lookupName name
+      let linkage = case (sclass, scope) of
+            (StorageNone, FileScope) -> ExternalLinkage
+            (StorageNone, BlockScope) -> NoLinkage
+            (StorageStatic, FileScope) -> InternalLinkage
+            (StorageStatic, BlockScope) -> NoLinkage
+            (StorageExtern, _) -> ExternalLinkage
+      state <- get
+      case (info, linkage) of
+        (Just (_, NoLinkage, True), _) -> throwError ("(1) cannot declare multiple times: " ++ name ++ " " ++ show state)
+        (Just (_, _, True), NoLinkage) -> throwError ("(2) cannot declare multiple times: " ++ name ++ " " ++ show state)
+        _ -> return ()
+      name' <- case linkage of
+        NoLinkage -> uqName name
+        _ -> return name
+      state <- get
+      case names state of
+        [] -> throwError $ "resolveDeclaration: not in a context (`" ++ name ++ "`)"
+        (inner : rest) -> put state {names = Data.Map.insert name (name', linkage) inner : rest}
+      {- resolve the initializer after the name has been registered. the declared name is in scope for the initializer -}
+      init' <- mapM resolveExpression init
+      return (VariableDeclaration name' init' sclass scope)
+
+    resolveFunctionDeclaration :: FunctionDeclaration -> ResM FunctionDeclaration
+    resolveFunctionDeclaration (FunctionDeclaration name params maybeBody sclass scope) = do
       name' <- resolveNameDecl ExternalLinkage name
       state <- get
       let outer_names = names state
@@ -185,6 +254,7 @@ resolve program =
           isNestedFunction (_ : _ : _) (Just _) = True
           isNestedFunction _ _ = False
       when (isNestedFunction outer_names maybeBody) $ throwError $ "Nested function definitions are not allowed." ++ show maybeBody
+      when (scope == BlockScope && sclass == StorageStatic) $ throwError "Nested static function declarations are not allowed."
       put state {labels = Just Data.Map.empty, names = Data.Map.empty : outer_names} -- new scope for function locals
       params' <- mapM (resolveNameDecl NoLinkage) params
       maybeBody' <- traverse (resolveBlock False) maybeBody
@@ -196,7 +266,7 @@ resolve program =
               "Some labels were declared but not defined: " ++ show (filter isMissingLabel (Data.Map.elems labels_map))
         Nothing -> return ()
       put state {labels = Nothing, names = outer_names} -- pop function scope
-      return (Function name' params' maybeBody')
+      return (FunctionDeclaration name' params' maybeBody' sclass scope)
     isMissingLabel :: LabelState -> Bool
     isMissingLabel (Missing _) = True
     isMissingLabel _ = False
@@ -216,13 +286,9 @@ resolve program =
       return (Block items')
 
     resolveBlockItem :: BlockItem -> ResM BlockItem
-    resolveBlockItem (Decl (VariableDeclaration name init)) = do
-      name' <- resolveNameDecl NoLinkage name
-      init' <- mapM resolveExpression init
-      return (Decl (VariableDeclaration name' init'))
-    resolveBlockItem (Decl (FunctionDeclaration func)) = do
-      func' <- resolveFunction func
-      return (Decl (FunctionDeclaration func'))
+    resolveBlockItem (Decl decl) = do
+      decl' <- resolveDeclaration decl
+      return (Decl decl')
     resolveBlockItem (Stmt stmt) = do
       stmt' <- resolveStatement stmt
       return (Stmt stmt')
@@ -275,10 +341,10 @@ resolve program =
         Just (ForInitExpr expr) -> do
           expr' <- resolveExpression expr
           return (Just (ForInitExpr expr'))
-        Just (ForInitDecl (VariableDeclaration name init)) -> do
+        Just (ForInitDecl (VarDecl (VariableDeclaration name init StorageNone BlockScope))) -> do
           name' <- resolveNameDecl NoLinkage name
           init' <- mapM resolveExpression init
-          return (Just (ForInitDecl (VariableDeclaration name' init')))
+          return (Just (ForInitDecl (VarDecl (VariableDeclaration name' init' StorageNone BlockScope))))
         Just (ForInitDecl _) -> throwError "Illegal for-loop initializer."
       maybeCond' <- mapM resolveExpression maybeCond
       maybeInc' <- mapM resolveExpression maybeInc
@@ -388,17 +454,16 @@ typecheck program = do
         }
 
     tcProgram :: Program -> TypM Program
-    tcProgram (Program functions) = do
-      functions' <- mapM tcFunction functions
-      return (Program functions')
+    tcProgram (Program decls) = do
+      decls' <- mapM tcDeclaration decls
+      return (Program decls')
 
-    tcFunction :: Function -> TypM Function
-    tcFunction (Function name params maybeBody) = do
+    tcFunctionDeclaration :: FunctionDeclaration -> TypM FunctionDeclaration
+    tcFunctionDeclaration (FunctionDeclaration name params maybeBody sclass scope) = do
       let funcT = FuncT IntT (replicate (length params) IntT)
           thisState = case maybeBody of
             Just _ -> SymDefined
             Nothing -> SymDeclared
-
       state <- get
       let (SymbolTable symtab) = symbolTable state
       sinfo' <- case Data.Map.lookup name symtab of
@@ -406,15 +471,17 @@ typecheck program = do
           when (funcT /= symbolType sinfo) $
             throwError $
               "Function " ++ name ++ " declared with different type."
-          when (symbolState sinfo == SymDefined && thisState == SymDefined) $
-            throwError $
-              "Function " ++ name ++ " already defined." {- TODO: this belongs into the resolution phase -}
-          let oldState = symbolState sinfo
-              newState = case (oldState, thisState) of
+          (state, global) <- case symbolAttributes sinfo of
+            (FunctionAttr s g) -> return (s, g)
+            _ -> throwError "Internal Error: symbol table has no function attributes"
+          when (state == SymDefined && thisState == SymDefined) $ throwError $ "Function " ++ name ++ " already defined."
+          when (global && sclass == StorageStatic) $ throwError $ "Static function declaration " ++ name ++ " follows non-static"
+
+          let newState = case (state, thisState) of
                 (SymDeclared, SymDeclared) -> SymDeclared
                 _ -> SymDefined
-          return $ SymbolInfo funcT newState
-        Nothing -> return $ SymbolInfo funcT thisState
+          return $ SymbolInfo funcT (FunctionAttr newState global)
+        Nothing -> return $ SymbolInfo funcT (FunctionAttr thisState (sclass /= StorageStatic))
 
       let symtab' = Data.Map.insert name sinfo' symtab
       put state {symbolTable = SymbolTable symtab'}
@@ -422,27 +489,82 @@ typecheck program = do
           tcParam paramName = do
             state <- get
             let (SymbolTable symtab) = symbolTable state
-                symbol = SymbolInfo IntT SymDefined
+                symbol = SymbolInfo IntT LocalVariableAttr
                 symtab' = Data.Map.insert paramName symbol symtab
             put state {symbolTable = SymbolTable symtab'}
             return paramName
       params' <- mapM tcParam params
       maybeBody' <- traverse tcBlock maybeBody
-      return (Function name params' maybeBody')
+      return (FunctionDeclaration name params' maybeBody' sclass scope)
 
     tcDeclaration :: Declaration -> TypM Declaration
-    tcDeclaration (VariableDeclaration name init) = do
+    tcDeclaration decl@(VarDecl (VariableDeclaration name init StorageExtern BlockScope)) = do
+      let varT = IntT
+      when (isJust init) (throwError "Initializer on local extern declaration.")
       state <- get
       let (SymbolTable symtab) = symbolTable state
-          varT = IntT {- TODO: variable types -}
-          symbol = SymbolInfo varT SymDefined
-          symtab' = Data.Map.insert name symbol symtab
-      put state {symbolTable = SymbolTable symtab'}
+      case Data.Map.lookup name symtab of
+        Just (SymbolInfo oldT _) -> when (varT /= oldT) (throwError "redeclared with different type")
+        _ -> do
+          let symbol = SymbolInfo varT (StaticVariableAttr NoInitializer True)
+          put state {symbolTable = SymbolTable $ Data.Map.insert name symbol symtab}
+          return ()
+      return decl
+    tcDeclaration decl@(VarDecl (VariableDeclaration name init StorageStatic BlockScope)) = do
+      let varT = IntT
+      syminit <- case init of
+        Just (Constant n) -> return $ Initial n
+        Nothing -> return $ Initial 0
+        _ -> throwError "Implementation limitation: only constants as initializer"
+      state <- get
+      let (SymbolTable symtab) = symbolTable state
+      let symbol = SymbolInfo varT (StaticVariableAttr syminit False)
+      put state {symbolTable = SymbolTable $ Data.Map.insert name symbol symtab}
+      return decl
+    tcDeclaration decl@(VarDecl (VariableDeclaration name init StorageNone BlockScope)) = do
+      let varT = IntT
+      state <- get
+      let (SymbolTable symtab) = symbolTable state
+      let symbol = SymbolInfo varT LocalVariableAttr
+      put state {symbolTable = SymbolTable $ Data.Map.insert name symbol symtab}
       mapM_ (tcExpressionOf varT) init
-      return (VariableDeclaration name init)
-    tcDeclaration (FunctionDeclaration func) = do
-      func' <- tcFunction func
-      return (FunctionDeclaration func')
+      return decl
+    tcDeclaration decl@(VarDecl (VariableDeclaration name init sclass FileScope)) = do
+      syminit <- case init of
+        Just (Constant n) -> return (Initial n)
+        Just _ -> throwError "Limitation: only constant initializers for global variables"
+        Nothing ->
+          return $
+            if sclass == StorageExtern
+              then NoInitializer
+              else Tentative
+      let varT = IntT
+      state <- get
+      let (SymbolTable symtab) = symbolTable state
+      (global, syminit) <- case Data.Map.lookup name symtab of
+        Just old@(SymbolInfo oldT attr) -> do
+          when (varT /= oldT) (throwError $ "Variable " ++ name ++ " redeclared with different type")
+          case attr of
+            (StaticVariableAttr oldinit oldglobal) -> do
+              let declglobal = sclass /= StorageStatic
+              when
+                (oldglobal /= declglobal && sclass /= StorageExtern)
+                (throwError $ "conflicting linkage between  " ++ show old ++ "  and  " ++ show decl)
+              syminit' <- case (oldinit, syminit) of
+                (Initial _, Initial _) -> throwError "multiple definitions"
+                (Initial _, _) -> return oldinit
+                (Tentative, Initial _) -> return syminit
+                (Tentative, _) -> return Tentative
+                _ -> return syminit
+              return (oldglobal, syminit')
+            _ -> throwError "Internal Error: non matching symbol attribute"
+        _ -> return (sclass /= StorageStatic, syminit)
+      let symbol = SymbolInfo varT (StaticVariableAttr syminit global)
+      put state {symbolTable = SymbolTable $ Data.Map.insert name symbol symtab}
+      return decl
+    tcDeclaration (FunDecl func) = do
+      func' <- tcFunctionDeclaration func
+      return (FunDecl func')
 
     tcBlock :: Block -> TypM Block
     tcBlock (Block items) = do

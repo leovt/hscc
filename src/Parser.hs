@@ -1,7 +1,8 @@
 module Parser
   ( parser,
     Program (..),
-    Function (..),
+    FunctionDeclaration (..),
+    VariableDeclaration (..),
     Block (..),
     BlockItem (..),
     Statement (..),
@@ -11,9 +12,12 @@ module Parser
     BinaryOperator (..),
     Label (..),
     ForInitializer (..),
+    StorageClass (..),
+    ScopeLevel (..),
   )
 where
 
+import CTypes
 import Lexer (LocatedToken, Token (..))
 
 parser :: [LocatedToken] -> Either String Program
@@ -21,11 +25,7 @@ parser loctokens = parseProgram (map fst loctokens)
 
 {- HLINT ignore "Use newtype instead of data" -}
 data Program
-  = Program [Function]
-  deriving (Show)
-
-data Function
-  = Function String [String] (Maybe Block)
+  = Program [Declaration]
   deriving (Show)
 
 data BlockItem
@@ -42,8 +42,16 @@ newtype Block = Block [BlockItem]
   deriving (Show)
 
 data Declaration
-  = VariableDeclaration String (Maybe Expression)
-  | FunctionDeclaration Function
+  = VarDecl VariableDeclaration
+  | FunDecl FunctionDeclaration
+  deriving (Show)
+
+data VariableDeclaration
+  = VariableDeclaration String (Maybe Expression) StorageClass ScopeLevel
+  deriving (Show)
+
+data FunctionDeclaration
+  = FunctionDeclaration String [String] (Maybe Block) StorageClass ScopeLevel
   deriving (Show)
 
 data Label
@@ -51,6 +59,17 @@ data Label
   | CaseLabel Int
   | DefaultLabel
   deriving (Show)
+
+data StorageClass
+  = StorageStatic
+  | StorageExtern
+  | StorageNone
+  deriving (Show, Eq)
+
+data ScopeLevel
+  = FileScope
+  | BlockScope
+  deriving (Show, Eq)
 
 data Statement
   = ReturnStatement Expression
@@ -164,6 +183,12 @@ precedence LogicOr = 18
 precedence Assignment = 1
 precedence (CompoundAssignment _) = 1
 
+isSpecifier :: Token -> Bool
+isSpecifier TokKeyInt = True
+isSpecifier TokKeyStatic = True
+isSpecifier TokKeyExtern = True
+isSpecifier _ = False
+
 associativity :: BinaryOperator -> Int
 associativity op = case op of
   Assignment -> 0 -- right_associative
@@ -173,16 +198,16 @@ associativity op = case op of
 parseProgram :: [Token] -> Either String Program
 parseProgram tokens = parseProgramSeq tokens []
   where
-    parseProgramSeq :: [Token] -> [Function] -> Either String Program
+    parseProgramSeq :: [Token] -> [Declaration] -> Either String Program
     parseProgramSeq [] acc = Right (Program (reverse acc))
     parseProgramSeq tokens acc = do
-      suite <- parseFunction tokens
+      suite <- maybeParseDeclaration FileScope tokens
       case suite of
-        Nothing -> Left "expected function"
+        Nothing -> Left "expected declaration"
         Just (fun, rest) -> parseProgramSeq rest (fun : acc)
 
-parseFunction :: [Token] -> Either String (Maybe (Function, [Token]))
-parseFunction (TokKeyInt : TokIdent name : TokOpenParen : tail) = do
+parseFunction :: ScopeLevel -> String -> StorageClass -> [Token] -> Either String (FunctionDeclaration, [Token])
+parseFunction scope name sclass tail = do
   let parse_params :: [String] -> [Token] -> Either String ([String], [Token])
       parse_params [] (TokKeyVoid : TokCloseParen : rest) = return ([], rest)
       parse_params [] (TokCloseParen : rest) = return ([], rest)
@@ -193,10 +218,9 @@ parseFunction (TokKeyInt : TokIdent name : TokOpenParen : tail) = do
   case rest of
     TokOpenBrace : rest' -> do
       (block, rest'') <- parseBlock (TokOpenBrace : rest')
-      return (Just (Function name params (Just block), rest''))
-    TokSemicolon : rest -> return (Just (Function name params Nothing, rest))
+      return (FunctionDeclaration name params (Just block) sclass scope, rest'')
+    TokSemicolon : rest -> return (FunctionDeclaration name params Nothing sclass scope, rest)
     _ -> Left "expected function body or ';' after function declaration"
-parseFunction _ = return Nothing
 
 parseBlock :: [Token] -> Either String (Block, [Token])
 parseBlock (TokOpenBrace : tokens) = do
@@ -212,18 +236,14 @@ parseBlockitems tokens = parse_blockitems_seq ([], tokens)
     parse_blockitems_seq :: ([BlockItem], [Token]) -> Either String ([BlockItem], [Token])
     parse_blockitems_seq (items, TokCloseBrace : tokens) = Right (items, TokCloseBrace : tokens)
     parse_blockitems_seq (items, tokens) = do
-      suite <- parseVariableDeclaration tokens
+      suite <- maybeParseDeclaration BlockScope tokens
       case suite of
         Just (decl, rest) -> parse_blockitems_seq (items ++ [Decl decl], rest)
         Nothing -> do
-          suite' <- parseFunction tokens
+          suite' <- parseStatement tokens
           case suite' of
-            Just (fun, rest) -> parse_blockitems_seq (items ++ [Decl (FunctionDeclaration fun)], rest)
-            Nothing -> do
-              suite'' <- parseStatement tokens
-              case suite'' of
-                Just (stmt, rest) -> parse_blockitems_seq (items ++ [Stmt stmt], rest)
-                Nothing -> Left $ "expected block item " ++ show tokens ++ "\n" ++ show (parseStatement tokens)
+            Just (stmt, rest) -> parse_blockitems_seq (items ++ [Stmt stmt], rest)
+            Nothing -> Left $ "expected block item " ++ show tokens ++ "\n" ++ show (parseStatement tokens)
 
 parseStatement :: [Token] -> Either String (Maybe (Statement, [Token]))
 parseStatement (TokKeyReturn : tail) = do
@@ -312,8 +332,9 @@ parseStatement (TokKeyFor : TokOpenParen : tail) = do
   let parseInitializer :: [Token] -> Either String (Maybe ForInitializer, [Token])
       parseInitializer (TokSemicolon : tail) = return (Nothing, tail)
       parseInitializer tokens = do
-        decl <- parseVariableDeclaration tokens
+        decl <- maybeParseDeclaration BlockScope tokens
         case decl of
+          Just (FunDecl _, _) -> Left "no function declaration in for initializer allowed."
           Just (d, rest) -> return (Just (ForInitDecl d), rest)
           Nothing -> do
             (expr, rest) <- parseExpression tokens
@@ -360,17 +381,55 @@ parseStatement tokens = do
     TokSemicolon : rest' -> return (Just (ExpressionStatement expr, rest'))
     _ -> Left "expected ';' after expression statement"
 
-parseVariableDeclaration :: [Token] -> Either String (Maybe (Declaration, [Token]))
-parseVariableDeclaration (TokKeyInt : (TokIdent name) : tokens) = case tokens of
+maybeParseDeclaration :: ScopeLevel -> [Token] -> Either String (Maybe (Declaration, [Token]))
+maybeParseDeclaration scope (tok : rest) =
+  if isSpecifier tok
+    then do
+      decl <- parseDeclaration scope (tok : rest)
+      return (Just decl)
+    else return Nothing
+maybeParseDeclaration _ _ = return Nothing
+
+decodeSpecifiers :: [Token] -> Either String (CType, StorageClass)
+decodeSpecifiers specifiers = do
+  let go [] (sc, tp) = return (sc, tp)
+      go (TokKeyInt : toks) (sc, tp) = go toks (sc, TokKeyInt : tp)
+      go (TokKeyStatic : toks) (sc, tp) = go toks (TokKeyStatic : sc, tp)
+      go (TokKeyExtern : toks) (sc, tp) = go toks (TokKeyExtern : sc, tp)
+      go (tok : _) _ = Left $ "Internal Error: not a specifier " ++ show tok
+  (storage, types) <- go specifiers ([], [])
+  storage' <- case storage of
+    [] -> return StorageNone
+    [TokKeyStatic] -> return StorageStatic
+    [TokKeyExtern] -> return StorageExtern
+    _ -> Left "Multiple Storage Specifiers."
+  ctype <- case types of
+    [TokKeyInt] -> return IntT
+    _ -> Left $ "Illegal Type " ++ show types
+  return (ctype, storage')
+
+parseDeclaration :: ScopeLevel -> [Token] -> Either String (Declaration, [Token])
+parseDeclaration scope tokens = do
+  let (specifiers, rest) = span isSpecifier tokens
+  (_ctype, sclass) <- decodeSpecifiers specifiers
+  case rest of
+    ((TokIdent name) : TokOpenParen : rest) -> do
+      (decl, rest') <- parseFunction scope name sclass rest
+      return (FunDecl decl, rest')
+    ((TokIdent name) : rest) -> do
+      (decl, rest') <- parseVariableDeclaration scope name sclass rest
+      return (VarDecl decl, rest')
+    _ -> Left "expected declaration."
+
+parseVariableDeclaration :: ScopeLevel -> String -> StorageClass -> [Token] -> Either String (VariableDeclaration, [Token])
+parseVariableDeclaration scope name sclass tokens = case tokens of
   (TokEqual : rest) -> do
     (expr, rest') <- parseExpression rest
     case rest' of
-      TokSemicolon : rest'' -> return (Just (VariableDeclaration name (Just expr), rest''))
+      TokSemicolon : rest'' -> return (VariableDeclaration name (Just expr) sclass scope, rest'')
       _ -> Left "expected ';' after variable declaration"
-  (TokSemicolon : rest) -> return (Just (VariableDeclaration name Nothing, rest))
-  (TokOpenParen : _) -> return Nothing
+  (TokSemicolon : rest) -> return (VariableDeclaration name Nothing sclass scope, rest)
   _ -> Left "expected ';' or '=' after variable declaration"
-parseVariableDeclaration _ = Right Nothing
 
 parseFactor :: [Token] -> Either String (Expression, [Token])
 parseFactor tokens = do
