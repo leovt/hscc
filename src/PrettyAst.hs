@@ -14,10 +14,10 @@ import Parser
 import Prettyprinter (Doc, Pretty (pretty), brackets, hardline, nest, parens, pretty, vsep, (<+>), (<>))
 import Validate (SymbolInfo (..), SymbolTable (..))
 
-instance Pretty Program where
+instance (Show t) => Pretty (Program t) where
   pretty (Program f) = pretty f
 
-instance Pretty FunctionDeclaration where
+instance (Show t) => Pretty (FunctionDeclaration t) where
   pretty (FunctionDeclaration name params (Just block) storage_class scope) =
     pretty "Function"
       <+> pretty name
@@ -34,15 +34,15 @@ showParam :: (CType, Maybe String) -> String
 showParam (ctype, Just name) = show ctype ++ " " ++ name
 showParam (ctype, Nothing) = show ctype
 
-instance Pretty Declaration where
+instance (Show t) => Pretty (Declaration t) where
   pretty (FunDecl fun) = pretty fun
   pretty decl@(VarDecl {}) = pretty (show decl)
 
-instance Pretty BlockItem where
+instance (Show t) => Pretty (BlockItem t) where
   pretty (Stmt stmt) = pretty stmt
   pretty (Decl decl) = pretty decl
 
-instance Pretty Block where
+instance (Show t) => Pretty (Block t) where
   pretty (Block items) =
     pretty "{"
       <> hardline
@@ -50,7 +50,7 @@ instance Pretty Block where
       <> hardline
       <> pretty "}"
 
-instance Pretty Statement where
+instance (Show t) => Pretty (Statement t) where
   pretty (CompoundStatement block) = pretty block
   pretty (SwitchStatement expr block) =
     pretty "switch" <+> parens (pretty (show expr)) <+> pretty block
@@ -88,7 +88,7 @@ instance Pretty Statement where
     pretty expr <> pretty ";"
   pretty stmt = pretty (show stmt)
 
-instance Pretty Expression where
+instance (Show t) => Pretty (Expression t) where
   pretty expr = pretty (show expr)
 
 instance Pretty SymbolInfo where

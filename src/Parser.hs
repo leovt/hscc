@@ -1,6 +1,8 @@
 module Parser
   ( parser,
     Program (..),
+    TypedProgram,
+    UntypedProgram,
     FunctionDeclaration (..),
     VariableDeclaration (..),
     Block (..),
@@ -23,38 +25,42 @@ import Data.Bits (shiftL)
 import Data.Maybe (isJust)
 import Lexer (IntSuffix (..), LocatedToken, Token (..))
 
-parser :: [LocatedToken] -> Either String Program
+parser :: [LocatedToken] -> Either String UntypedProgram
 parser loctokens = parseProgram (map fst loctokens)
 
 {- HLINT ignore "Use newtype instead of data" -}
-data Program
-  = Program [Declaration]
+data Program t
+  = Program [Declaration t]
   deriving (Show)
 
-data BlockItem
-  = Stmt Statement
-  | Decl Declaration
+type UntypedProgram = Program ()
+
+type TypedProgram = Program CType
+
+data BlockItem t
+  = Stmt (Statement t)
+  | Decl (Declaration t)
   deriving (Show)
 
-data ForInitializer
-  = ForInitDecl Declaration
-  | ForInitExpr Expression
+data ForInitializer t
+  = ForInitDecl (Declaration t)
+  | ForInitExpr (Expression t)
   deriving (Show)
 
-newtype Block = Block [BlockItem]
+newtype Block t = Block [BlockItem t]
   deriving (Show)
 
-data Declaration
-  = VarDecl VariableDeclaration
-  | FunDecl FunctionDeclaration
+data Declaration t
+  = VarDecl (VariableDeclaration t)
+  | FunDecl (FunctionDeclaration t)
   deriving (Show)
 
-data VariableDeclaration
-  = VariableDeclaration String (Maybe Expression) StorageClass ScopeLevel
+data VariableDeclaration t
+  = VariableDeclaration String (Maybe (Expression t)) StorageClass ScopeLevel
   deriving (Show)
 
-data FunctionDeclaration
-  = FunctionDeclaration String [(CType, Maybe String)] (Maybe Block) StorageClass ScopeLevel
+data FunctionDeclaration t
+  = FunctionDeclaration String [(CType, Maybe String)] (Maybe (Block t)) StorageClass ScopeLevel
   deriving (Show)
 
 data Label
@@ -74,30 +80,30 @@ data ScopeLevel
   | BlockScope
   deriving (Show, Eq)
 
-data Statement
-  = ReturnStatement Expression
-  | ExpressionStatement Expression
-  | IfStatement Expression Statement (Maybe Statement)
-  | LabelledStatement Label Statement
+data Statement t
+  = ReturnStatement (Expression t)
+  | ExpressionStatement (Expression t)
+  | IfStatement (Expression t) (Statement t) (Maybe (Statement t))
+  | LabelledStatement Label (Statement t)
   | GotoStatement String
-  | CompoundStatement Block
+  | CompoundStatement (Block t)
   | BreakStatement
   | ContinueStatement
-  | WhileStatement Expression Statement
-  | DoWhileStatement Expression Statement
-  | ForStatement (Maybe ForInitializer) (Maybe Expression) (Maybe Expression) Statement
-  | SwitchStatement Expression Statement
+  | WhileStatement (Expression t) (Statement t)
+  | DoWhileStatement (Expression t) (Statement t)
+  | ForStatement (Maybe (ForInitializer t)) (Maybe (Expression t)) (Maybe (Expression t)) (Statement t)
+  | SwitchStatement (Expression t) (Statement t)
   | NullStatement
   deriving (Show)
 
-data Expression
+data Expression t
   = Constant CType Integer
-  | Variable String
-  | Unary UnaryOperator Expression
-  | Binary BinaryOperator Expression Expression
-  | Conditional Expression Expression Expression
-  | FunctionCall String [Expression]
-  | Cast CType Expression
+  | Variable t String
+  | Unary t UnaryOperator (Expression t)
+  | Binary t BinaryOperator (Expression t) (Expression t)
+  | Conditional t (Expression t) (Expression t) (Expression t)
+  | FunctionCall t String [Expression t]
+  | Cast CType (Expression t)
   deriving (Show)
 
 data UnaryOperator
@@ -203,10 +209,10 @@ associativity op = case op of
   CompoundAssignment _ -> 0 -- compound assignments are also right-associative
   _other -> 1 -- left_associative
 
-parseProgram :: [Token] -> Either String Program
+parseProgram :: [Token] -> Either String UntypedProgram
 parseProgram tokens = parseProgramSeq tokens []
   where
-    parseProgramSeq :: [Token] -> [Declaration] -> Either String Program
+    parseProgramSeq :: [Token] -> [Declaration ()] -> Either String UntypedProgram
     parseProgramSeq [] acc = Right (Program (reverse acc))
     parseProgramSeq tokens acc = do
       suite <- maybeParseDeclaration FileScope tokens
@@ -214,7 +220,7 @@ parseProgram tokens = parseProgramSeq tokens []
         Nothing -> Left "expected declaration"
         Just (fun, rest) -> parseProgramSeq rest (fun : acc)
 
-parseFunction :: ScopeLevel -> String -> StorageClass -> [Token] -> Either String (FunctionDeclaration, [Token])
+parseFunction :: ScopeLevel -> String -> StorageClass -> [Token] -> Either String (FunctionDeclaration (), [Token])
 parseFunction scope name sclass tail = do
   let parse_params :: [(CType, Maybe String)] -> [Token] -> Either String ([(CType, Maybe String)], [Token])
       parse_params [] (TokKeyVoid : TokCloseParen : rest) = return ([], rest)
@@ -239,7 +245,7 @@ parseFunction scope name sclass tail = do
     TokSemicolon : rest -> return (FunctionDeclaration name params Nothing sclass scope, rest)
     _ -> Left "expected function body or ';' after function declaration"
 
-parseBlock :: [Token] -> Either String (Block, [Token])
+parseBlock :: [Token] -> Either String (Block (), [Token])
 parseBlock (TokOpenBrace : tokens) = do
   (items, rest) <- parseBlockitems tokens
   case rest of
@@ -247,10 +253,10 @@ parseBlock (TokOpenBrace : tokens) = do
     _ -> Left "expected '}' at end of block"
 parseBlock _ = Left "expected '{' at start of block"
 
-parseBlockitems :: [Token] -> Either String ([BlockItem], [Token])
+parseBlockitems :: [Token] -> Either String ([BlockItem ()], [Token])
 parseBlockitems tokens = parse_blockitems_seq ([], tokens)
   where
-    parse_blockitems_seq :: ([BlockItem], [Token]) -> Either String ([BlockItem], [Token])
+    parse_blockitems_seq :: ([BlockItem ()], [Token]) -> Either String ([BlockItem ()], [Token])
     parse_blockitems_seq (items, TokCloseBrace : tokens) = Right (items, TokCloseBrace : tokens)
     parse_blockitems_seq (items, tokens) = do
       suite <- maybeParseDeclaration BlockScope tokens
@@ -262,7 +268,7 @@ parseBlockitems tokens = parse_blockitems_seq ([], tokens)
             Just (stmt, rest) -> parse_blockitems_seq (items ++ [Stmt stmt], rest)
             Nothing -> Left $ "expected block item " ++ show tokens ++ "\n" ++ show (parseStatement tokens)
 
-parseStatement :: [Token] -> Either String (Maybe (Statement, [Token]))
+parseStatement :: [Token] -> Either String (Maybe (Statement (), [Token]))
 parseStatement (TokKeyReturn : tail) = do
   (expr, rest) <- parseExpression tail
   case rest of
@@ -346,7 +352,7 @@ parseStatement (TokKeyDo : tail) = do
     _ -> Left "expected 'while (' after do statement"
 parseStatement (TokKeyFor : TokOpenParen : tail) = do
   -- parse initializer
-  let parseInitializer :: [Token] -> Either String (Maybe ForInitializer, [Token])
+  let parseInitializer :: [Token] -> Either String (Maybe (ForInitializer ()), [Token])
       parseInitializer (TokSemicolon : tail) = return (Nothing, tail)
       parseInitializer tokens = do
         decl <- maybeParseDeclaration BlockScope tokens
@@ -359,7 +365,7 @@ parseStatement (TokKeyFor : TokOpenParen : tail) = do
               TokSemicolon : rest' -> return (Just (ForInitExpr expr), rest')
               _ -> Left "expected ';' after for loop initializer"
   -- parse condition
-  let parseCondition :: [Token] -> Either String (Maybe Expression, [Token])
+  let parseCondition :: [Token] -> Either String (Maybe (Expression ()), [Token])
       parseCondition (TokSemicolon : tail) = return (Nothing, tail)
       parseCondition tokens = do
         (expr, rest') <- parseExpression tokens
@@ -367,7 +373,7 @@ parseStatement (TokKeyFor : TokOpenParen : tail) = do
           TokSemicolon : rest'' -> return (Just expr, rest'')
           _ -> Left "expected ';' after for loop condition"
   -- parse increment
-  let parseIncrement :: [Token] -> Either String (Maybe Expression, [Token])
+  let parseIncrement :: [Token] -> Either String (Maybe (Expression ()), [Token])
       parseIncrement (TokCloseParen : tail) = return (Nothing, tail)
       parseIncrement tokens = do
         (expr, rest') <- parseExpression tokens
@@ -398,7 +404,7 @@ parseStatement tokens = do
     TokSemicolon : rest' -> return (Just (ExpressionStatement expr, rest'))
     _ -> Left "expected ';' after expression statement"
 
-maybeParseDeclaration :: ScopeLevel -> [Token] -> Either String (Maybe (Declaration, [Token]))
+maybeParseDeclaration :: ScopeLevel -> [Token] -> Either String (Maybe (Declaration (), [Token]))
 maybeParseDeclaration scope (tok : rest) =
   if isSpecifier tok
     then do
@@ -431,7 +437,7 @@ parseType [TokKeyLong, TokKeyInt] = return LongIntT
 parseType [TokKeyInt, TokKeyLong] = return LongIntT
 parseType tokens = Left $ "Illegal type specifiers " ++ show tokens
 
-parseDeclaration :: ScopeLevel -> [Token] -> Either String (Declaration, [Token])
+parseDeclaration :: ScopeLevel -> [Token] -> Either String (Declaration (), [Token])
 parseDeclaration scope tokens = do
   let (specifiers, rest) = span isSpecifier tokens
   (_ctype, sclass) <- decodeSpecifiers specifiers
@@ -444,7 +450,7 @@ parseDeclaration scope tokens = do
       return (VarDecl decl, rest')
     _ -> Left "expected declaration."
 
-parseVariableDeclaration :: ScopeLevel -> String -> StorageClass -> [Token] -> Either String (VariableDeclaration, [Token])
+parseVariableDeclaration :: ScopeLevel -> String -> StorageClass -> [Token] -> Either String (VariableDeclaration (), [Token])
 parseVariableDeclaration scope name sclass tokens = case tokens of
   (TokEqual : rest) -> do
     (expr, rest') <- parseExpression rest
@@ -454,22 +460,22 @@ parseVariableDeclaration scope name sclass tokens = case tokens of
   (TokSemicolon : rest) -> return (VariableDeclaration name Nothing sclass scope, rest)
   _ -> Left "expected ';' or '=' after variable declaration"
 
-parseFactor :: [Token] -> Either String (Expression, [Token])
+parseFactor :: [Token] -> Either String (Expression (), [Token])
 parseFactor tokens = do
   (expr, rest) <- parseFactorPrefix tokens
   parseFactorSuffix expr rest
   where
-    parseFactorSuffix :: Expression -> [Token] -> Either String (Expression, [Token])
-    parseFactorSuffix expr (TokDblPlus : rest) = parseFactorSuffix (Unary PostIncrement expr) rest
-    parseFactorSuffix expr (TokDblMinus : rest) = parseFactorSuffix (Unary PostDecrement expr) rest
+    parseFactorSuffix :: Expression () -> [Token] -> Either String (Expression (), [Token])
+    parseFactorSuffix expr (TokDblPlus : rest) = parseFactorSuffix (Unary () PostIncrement expr) rest
+    parseFactorSuffix expr (TokDblMinus : rest) = parseFactorSuffix (Unary () PostDecrement expr) rest
     parseFactorSuffix expr rest = Right (expr, rest)
 
-parseFactorPrefix :: [Token] -> Either String (Expression, [Token])
+parseFactorPrefix :: [Token] -> Either String (Expression (), [Token])
 parseFactorPrefix ((TokInt n suffix) : tail) = do
   const <- parseIntLiteral n suffix
   return (const, tail)
 parseFactorPrefix ((TokIdent n) : TokOpenParen : tail) = do
-  let parse_arguments :: [Expression] -> [Token] -> Either String ([Expression], [Token])
+  let parse_arguments :: [Expression ()] -> [Token] -> Either String ([Expression ()], [Token])
       parse_arguments [] (TokCloseParen : rest) = return ([], rest)
       parse_arguments args tokens = do
         (expr, rest) <- parseExpression tokens
@@ -478,23 +484,23 @@ parseFactorPrefix ((TokIdent n) : TokOpenParen : tail) = do
           TokCloseParen : rest' -> return (args ++ [expr], rest')
           _ -> Left "expected ',' or ')' in function call arguments"
   (args, rest) <- parse_arguments [] tail
-  return (FunctionCall n args, rest)
-parseFactorPrefix ((TokIdent n) : tail) = return (Variable n, tail)
+  return (FunctionCall () n args, rest)
+parseFactorPrefix ((TokIdent n) : tail) = return (Variable () n, tail)
 parseFactorPrefix (TokMinus : tail) = do
   (expr, rest) <- parseFactor tail
-  return (Unary Negate expr, rest)
+  return (Unary () Negate expr, rest)
 parseFactorPrefix (TokTilde : tail) = do
   (expr, rest) <- parseFactor tail
-  return (Unary Complement expr, rest)
+  return (Unary () Complement expr, rest)
 parseFactorPrefix (TokBang : tail) = do
   (expr, rest) <- parseFactor tail
-  return (Unary LogicNot expr, rest)
+  return (Unary () LogicNot expr, rest)
 parseFactorPrefix (TokDblPlus : tail) = do
   (expr, rest) <- parseFactor tail
-  return (Unary PreIncrement expr, rest)
+  return (Unary () PreIncrement expr, rest)
 parseFactorPrefix (TokDblMinus : tail) = do
   (expr, rest) <- parseFactor tail
-  return (Unary PreDecrement expr, rest)
+  return (Unary () PreDecrement expr, rest)
 parseFactorPrefix (TokOpenParen : tail) = do
   let (types, rest) = span isTypeSpecifier tail
   if null types
@@ -513,15 +519,15 @@ parseFactorPrefix (TokOpenParen : tail) = do
 parseFactorPrefix (token : _) = Left $ "unexpected token" ++ show token
 parseFactorPrefix [] = Left "unexpected end of input"
 
-parseExpression :: [Token] -> Either String (Expression, [Token])
+parseExpression :: [Token] -> Either String (Expression (), [Token])
 parseExpression = parse_expression_prec 0
   where
-    parse_expression_prec :: Int -> [Token] -> Either String (Expression, [Token])
+    parse_expression_prec :: Int -> [Token] -> Either String (Expression (), [Token])
     parse_expression_prec min_prec tokens = do
       (left, rest) <- parseFactor tokens
       parse_rhs min_prec left rest
 
-    parse_rhs :: Int -> Expression -> [Token] -> Either String (Expression, [Token])
+    parse_rhs :: Int -> Expression () -> [Token] -> Either String (Expression (), [Token])
     parse_rhs min_prec left (TokQuestion : rest) =
       let prec = 3
           assoc = 0
@@ -532,7 +538,7 @@ parseExpression = parse_expression_prec 0
               case rest' of
                 TokColon : rest'' -> do
                   (rightExpr, rest''') <- parse_expression_prec (assoc + prec) rest''
-                  parse_rhs min_prec (Conditional left midExpr rightExpr) rest'''
+                  parse_rhs min_prec (Conditional () left midExpr rightExpr) rest'''
                 _ -> Left "expected ':' in conditional expression"
     parse_rhs min_prec left (token : rest) =
       case binop token of
@@ -543,11 +549,11 @@ parseExpression = parse_expression_prec 0
                 then Right (left, token : rest)
                 else do
                   (right, rest') <- parse_expression_prec (assoc + prec) rest
-                  parse_rhs min_prec (Binary operator left right) rest'
+                  parse_rhs min_prec (Binary () operator left right) rest'
         Nothing -> Right (left, token : rest)
     parse_rhs _ left [] = Right (left, [])
 
-parseIntLiteral :: Integer -> IntSuffix -> Either String Expression
+parseIntLiteral :: Integer -> IntSuffix -> Either String (Expression ())
 parseIntLiteral n NoSuffix
   | n < 1 `shiftL` 31 = Right (Constant IntT n)
   | n < 1 `shiftL` 63 = Right (Constant LongIntT n)

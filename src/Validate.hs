@@ -27,7 +27,9 @@ import Parser
     ScopeLevel (..),
     Statement (..),
     StorageClass (..),
+    TypedProgram,
     UnaryOperator (..),
+    UntypedProgram,
     VariableDeclaration (..),
   )
 
@@ -95,13 +97,22 @@ newtype SymbolTable
   = SymbolTable (Data.Map.Map String SymbolInfo)
   deriving (Show)
 
-validate :: Program -> Either String (Program, Int, SymbolTable)
+typeOf :: Expression CType -> CType
+typeOf (Variable t _) = t
+typeOf (Unary t _ _) = t
+typeOf (Binary t _ _ _) = t
+typeOf (Cast t _) = t
+typeOf (Constant t _) = t
+typeOf (Conditional t _ _ _) = t
+typeOf (FunctionCall t _ _) = t
+
+validate :: UntypedProgram -> Either String (TypedProgram, Int, SymbolTable)
 validate program = do
   (resolved_program, nextID) <- resolve program
   (checked_program, symbolTable) <- typecheck resolved_program
   return (checked_program, nextID, symbolTable)
 
-resolve :: Program -> Either String (Program, Int)
+resolve :: UntypedProgram -> Either String (UntypedProgram, Int)
 resolve program =
   case runState (runExceptT (resolveProgram program)) initState of
     (Left err, _) -> Left err
@@ -207,12 +218,12 @@ resolve program =
             put state {nextID = n + 1, labels = Just labels_map'}
             return name'
 
-    resolveProgram :: Program -> ResM Program
+    resolveProgram :: UntypedProgram -> ResM UntypedProgram
     resolveProgram (Program decls) = do
       decls' <- mapM resolveDeclaration decls
       return (Program decls')
 
-    resolveDeclaration :: Declaration -> ResM Declaration
+    resolveDeclaration :: Declaration () -> ResM (Declaration ())
     resolveDeclaration (VarDecl vdec) = do
       vdec' <- resolveVariableDeclaration vdec
       return (VarDecl vdec')
@@ -220,7 +231,7 @@ resolve program =
       func' <- resolveFunctionDeclaration func
       return (FunDecl func')
 
-    resolveVariableDeclaration :: VariableDeclaration -> ResM VariableDeclaration
+    resolveVariableDeclaration :: VariableDeclaration () -> ResM (VariableDeclaration ())
     resolveVariableDeclaration (VariableDeclaration name init sclass scope) = do
       info <- lookupName name
       let linkage = case (sclass, scope) of
@@ -245,7 +256,7 @@ resolve program =
       init' <- mapM resolveExpression init
       return (VariableDeclaration name' init' sclass scope)
 
-    resolveFunctionDeclaration :: FunctionDeclaration -> ResM FunctionDeclaration
+    resolveFunctionDeclaration :: FunctionDeclaration () -> ResM (FunctionDeclaration ())
     resolveFunctionDeclaration (FunctionDeclaration name params maybeBody sclass scope) = do
       name' <- resolveNameDecl ExternalLinkage name
       state <- get
@@ -277,7 +288,7 @@ resolve program =
       return (ctype, Just name')
     resolveParam x = return x
 
-    resolveBlock :: Bool -> Block -> ResM Block
+    resolveBlock :: Bool -> Block () -> ResM (Block ())
     resolveBlock addScope (Block items) = do
       state <- get
       {- HLINT ignore "Use if" -}
@@ -291,7 +302,7 @@ resolve program =
       put state {names = outer_locals} -- pop the sub-scope
       return (Block items')
 
-    resolveBlockItem :: BlockItem -> ResM BlockItem
+    resolveBlockItem :: BlockItem () -> ResM (BlockItem ())
     resolveBlockItem (Decl decl) = do
       decl' <- resolveDeclaration decl
       return (Decl decl')
@@ -299,7 +310,7 @@ resolve program =
       stmt' <- resolveStatement stmt
       return (Stmt stmt')
 
-    resolveStatement :: Statement -> ResM Statement
+    resolveStatement :: Statement () -> ResM (Statement ())
     resolveStatement (ReturnStatement expr) = do
       expr' <- resolveExpression expr
       return (ReturnStatement expr')
@@ -400,58 +411,58 @@ resolve program =
       put state_after {allowBreak = allowBreak state_before, allowContinue = allowContinue state_before}
       return result
 
-    resolveExpression :: Expression -> ResM Expression
-    resolveExpression (Variable name) = do
+    resolveExpression :: Expression () -> ResM (Expression ())
+    resolveExpression (Variable t name) = do
       name' <- resolveName name
-      return (Variable name')
-    resolveExpression (Unary PreDecrement (Variable var)) = do
-      expr' <- resolveExpression (Variable var)
-      return (Unary PreDecrement expr')
-    resolveExpression (Unary PreIncrement (Variable var)) = do
-      expr' <- resolveExpression (Variable var)
-      return (Unary PreIncrement expr')
-    resolveExpression (Unary PostDecrement (Variable var)) = do
-      expr' <- resolveExpression (Variable var)
-      return (Unary PostDecrement expr')
-    resolveExpression (Unary PostIncrement (Variable var)) = do
-      expr' <- resolveExpression (Variable var)
-      return (Unary PostIncrement expr')
-    resolveExpression (Unary PreDecrement _) = throwError "PreDecrement applied to non-variable."
-    resolveExpression (Unary PreIncrement _) = throwError "PreIncrement applied to non-variable."
-    resolveExpression (Unary PostDecrement _) = throwError "PostDecrement applied to non-variable."
-    resolveExpression (Unary PostIncrement _) = throwError "PostIncrement applied to non-variable."
-    resolveExpression (Unary op expr) = do
+      return (Variable t name')
+    resolveExpression (Unary t PreDecrement (Variable t2 var)) = do
+      expr' <- resolveExpression (Variable t2 var)
+      return (Unary t PreDecrement expr')
+    resolveExpression (Unary t PreIncrement (Variable t2 var)) = do
+      expr' <- resolveExpression (Variable t2 var)
+      return (Unary t PreIncrement expr')
+    resolveExpression (Unary t PostDecrement (Variable t2 var)) = do
+      expr' <- resolveExpression (Variable t2 var)
+      return (Unary t PostDecrement expr')
+    resolveExpression (Unary t PostIncrement (Variable t2 var)) = do
+      expr' <- resolveExpression (Variable t2 var)
+      return (Unary t PostIncrement expr')
+    resolveExpression (Unary _ PreDecrement _) = throwError "PreDecrement applied to non-variable."
+    resolveExpression (Unary _ PreIncrement _) = throwError "PreIncrement applied to non-variable."
+    resolveExpression (Unary _ PostDecrement _) = throwError "PostDecrement applied to non-variable."
+    resolveExpression (Unary _ PostIncrement _) = throwError "PostIncrement applied to non-variable."
+    resolveExpression (Unary t op expr) = do
       expr' <- resolveExpression expr
-      return (Unary op expr')
-    resolveExpression (Binary Assignment (Variable left) right) = do
+      return (Unary t op expr')
+    resolveExpression (Binary t Assignment (Variable t2 left) right) = do
       left' <- resolveName left
       right' <- resolveExpression right
-      return (Binary Assignment (Variable left') right')
-    resolveExpression (Binary (CompoundAssignment op) (Variable left) right) = do
+      return (Binary t Assignment (Variable t2 left') right')
+    resolveExpression (Binary t (CompoundAssignment op) (Variable t2 left) right) = do
       left' <- resolveName left
       right' <- resolveExpression right
-      return (Binary (CompoundAssignment op) (Variable left') right')
-    resolveExpression (Binary Assignment _ _) = throwError "assign to non-variable."
-    resolveExpression (Binary (CompoundAssignment _) _ _) = throwError "assign to non-variable."
-    resolveExpression (Binary op left right) = do
+      return (Binary t (CompoundAssignment op) (Variable t2 left') right')
+    resolveExpression (Binary _ Assignment _ _) = throwError "assign to non-variable."
+    resolveExpression (Binary _ (CompoundAssignment _) _ _) = throwError "assign to non-variable."
+    resolveExpression (Binary t op left right) = do
       left' <- resolveExpression left
       right' <- resolveExpression right
-      return (Binary op left' right')
-    resolveExpression (Constant c t) = pure (Constant c t)
-    resolveExpression (Conditional cond trueExpr falseExpr) = do
+      return (Binary t op left' right')
+    resolveExpression (Constant t c) = pure (Constant t c)
+    resolveExpression (Conditional t cond trueExpr falseExpr) = do
       cond' <- resolveExpression cond
       trueExpr' <- resolveExpression trueExpr
       falseExpr' <- resolveExpression falseExpr
-      return (Conditional cond' trueExpr' falseExpr')
-    resolveExpression (FunctionCall name args) = do
+      return (Conditional t cond' trueExpr' falseExpr')
+    resolveExpression (FunctionCall t name args) = do
       name' <- resolveName name
       args' <- mapM resolveExpression args
-      return (FunctionCall name' args')
-    resolveExpression (Cast ctype expr) = do
+      return (FunctionCall t name' args')
+    resolveExpression (Cast t expr) = do
       expr' <- resolveExpression expr
-      return (Cast ctype expr')
+      return (Cast t expr')
 
-typecheck :: Program -> Either String (Program, SymbolTable)
+typecheck :: UntypedProgram -> Either String (TypedProgram, SymbolTable)
 typecheck program = do
   case runState (runExceptT (tcProgram program)) initState of
     (Left err, _) -> Left err
@@ -462,12 +473,12 @@ typecheck program = do
         { symbolTable = SymbolTable Data.Map.empty
         }
 
-    tcProgram :: Program -> TypM Program
+    tcProgram :: UntypedProgram -> TypM TypedProgram
     tcProgram (Program decls) = do
       decls' <- mapM tcDeclaration decls
       return (Program decls')
 
-    tcFunctionDeclaration :: FunctionDeclaration -> TypM FunctionDeclaration
+    tcFunctionDeclaration :: FunctionDeclaration () -> TypM (FunctionDeclaration CType)
     tcFunctionDeclaration (FunctionDeclaration name params maybeBody sclass scope) = do
       let funcT = FuncT IntT (replicate (length params) IntT)
           thisState = case maybeBody of
@@ -507,8 +518,8 @@ typecheck program = do
       maybeBody' <- traverse tcBlock maybeBody
       return (FunctionDeclaration name params' maybeBody' sclass scope)
 
-    tcDeclaration :: Declaration -> TypM Declaration
-    tcDeclaration decl@(VarDecl (VariableDeclaration name init StorageExtern BlockScope)) = do
+    tcDeclaration :: Declaration () -> TypM (Declaration CType)
+    tcDeclaration (VarDecl (VariableDeclaration name init StorageExtern BlockScope)) = do
       let varT = IntT
       when (isJust init) (throwError "Initializer on local extern declaration.")
       state <- get
@@ -519,8 +530,9 @@ typecheck program = do
           let symbol = SymbolInfo varT (StaticVariableAttr NoInitializer True)
           put state {symbolTable = SymbolTable $ Data.Map.insert name symbol symtab}
           return ()
-      return decl
-    tcDeclaration decl@(VarDecl (VariableDeclaration name init StorageStatic BlockScope)) = do
+      init' <- mapM tcExpression init
+      return (VarDecl (VariableDeclaration name init' StorageExtern BlockScope))
+    tcDeclaration (VarDecl (VariableDeclaration name init StorageStatic BlockScope)) = do
       let varT = IntT
       syminit <- case init of
         Just (Constant _ n) -> return $ Initial n
@@ -530,15 +542,16 @@ typecheck program = do
       let (SymbolTable symtab) = symbolTable state
       let symbol = SymbolInfo varT (StaticVariableAttr syminit False)
       put state {symbolTable = SymbolTable $ Data.Map.insert name symbol symtab}
-      return decl
-    tcDeclaration decl@(VarDecl (VariableDeclaration name init StorageNone BlockScope)) = do
+      init' <- mapM tcExpression init
+      return (VarDecl (VariableDeclaration name init' StorageStatic BlockScope))
+    tcDeclaration (VarDecl (VariableDeclaration name init StorageNone BlockScope)) = do
       let varT = IntT
       state <- get
       let (SymbolTable symtab) = symbolTable state
       let symbol = SymbolInfo varT LocalVariableAttr
       put state {symbolTable = SymbolTable $ Data.Map.insert name symbol symtab}
-      mapM_ (tcExpressionOf varT) init
-      return decl
+      init' <- mapM (tcExpressionOf varT) init
+      return (VarDecl (VariableDeclaration name init' StorageNone BlockScope))
     tcDeclaration decl@(VarDecl (VariableDeclaration name init sclass FileScope)) = do
       syminit <- case init of
         Just (Constant _ n) -> return (Initial n)
@@ -571,17 +584,18 @@ typecheck program = do
         _ -> return (sclass /= StorageStatic, syminit)
       let symbol = SymbolInfo varT (StaticVariableAttr syminit global)
       put state {symbolTable = SymbolTable $ Data.Map.insert name symbol symtab}
-      return decl
+      init' <- mapM (tcExpressionOf varT) init
+      return (VarDecl (VariableDeclaration name init' sclass FileScope))
     tcDeclaration (FunDecl func) = do
       func' <- tcFunctionDeclaration func
       return (FunDecl func')
 
-    tcBlock :: Block -> TypM Block
+    tcBlock :: Block () -> TypM (Block CType)
     tcBlock (Block items) = do
       items' <- mapM tcBlockItem items
       return (Block items')
 
-    tcBlockItem :: BlockItem -> TypM BlockItem
+    tcBlockItem :: BlockItem () -> TypM (BlockItem CType)
     tcBlockItem (Decl decl) = do
       decl' <- tcDeclaration decl
       return (Decl decl')
@@ -589,19 +603,19 @@ typecheck program = do
       stmt' <- tcStatement stmt
       return (Stmt stmt')
 
-    tcStatement :: Statement -> TypM Statement
+    tcStatement :: Statement () -> TypM (Statement CType)
     tcStatement (ReturnStatement expr) = do
       let retT = IntT {- TODO: function return type lookup -}
-      tcExpressionOf retT expr
-      return (ReturnStatement expr)
+      expr' <- tcExpressionOf retT expr
+      return (ReturnStatement expr')
     tcStatement (ExpressionStatement expr) = do
-      _ <- tcExpression expr
-      return (ExpressionStatement expr)
+      expr' <- tcExpression expr
+      return (ExpressionStatement expr')
     tcStatement (IfStatement cond thenStmt maybeElseStmt) = do
-      tcExpressionOf IntT cond
+      cond' <- tcExpressionOf IntT cond
       thenStmt' <- tcStatement thenStmt
       maybeElseStmt' <- mapM tcStatement maybeElseStmt
-      return (IfStatement cond thenStmt' maybeElseStmt')
+      return (IfStatement cond' thenStmt' maybeElseStmt')
     tcStatement (LabelledStatement label stmt) = do
       stmt' <- tcStatement stmt
       return (LabelledStatement label stmt')
@@ -611,64 +625,65 @@ typecheck program = do
       return (CompoundStatement block')
     tcStatement NullStatement = return NullStatement
     tcStatement (WhileStatement cond stmt) = do
-      tcExpressionOf IntT cond
+      cond' <- tcExpressionOf IntT cond
       stmt' <- tcStatement stmt
-      return (WhileStatement cond stmt')
+      return (WhileStatement cond' stmt')
     tcStatement (DoWhileStatement cond stmt) = do
-      tcExpressionOf IntT cond
+      cond' <- tcExpressionOf IntT cond
       stmt' <- tcStatement stmt
-      return (DoWhileStatement cond stmt')
+      return (DoWhileStatement cond' stmt')
     tcStatement (ForStatement maybeInit maybeCond maybeInc stmt) = do
       maybeInit' <- case maybeInit of
         Nothing -> return Nothing
         Just (ForInitExpr expr) -> do
-          _ <- tcExpression expr
-          return (Just (ForInitExpr expr))
+          expr' <- tcExpression expr
+          return (Just (ForInitExpr expr'))
         Just (ForInitDecl decl) -> do
           decl' <- tcDeclaration decl
           return (Just (ForInitDecl decl'))
-      mapM_ (tcExpressionOf IntT) maybeCond
-      mapM_ tcExpression maybeInc
+      maybeCond' <- mapM (tcExpressionOf IntT) maybeCond
+      maybeInc' <- mapM tcExpression maybeInc
       stmt' <- tcStatement stmt
-      return (ForStatement maybeInit' maybeCond maybeInc stmt')
+      return (ForStatement maybeInit' maybeCond' maybeInc' stmt')
     tcStatement BreakStatement = return BreakStatement
     tcStatement ContinueStatement = return ContinueStatement
     tcStatement (SwitchStatement expr stmt) = do
-      tcExpressionOf IntT expr
+      expr' <- tcExpressionOf IntT expr
       stmt' <- tcStatement stmt
-      return (SwitchStatement expr stmt')
+      return (SwitchStatement expr' stmt')
 
-    tcExpression :: Expression -> TypM CType
-    tcExpression (Variable name) = do
+    tcExpression :: Expression () -> TypM (Expression CType)
+    tcExpression (Variable _ name) = do
       state <- get
       let (SymbolTable symtab) = symbolTable state
       case Data.Map.lookup name symtab of
-        Just sinfo -> return (symbolType sinfo)
+        Just sinfo -> return (Variable (symbolType sinfo) name)
         Nothing -> throwError $ "tcExpression: Undeclared variable " ++ name
-    tcExpression (Unary _ expr) = do
-      tcExpressionOf IntT expr
-      return IntT
-    tcExpression (Binary _ left right) = do
-      leftT <- tcExpression left
-      rightT <- tcExpression right
-      unless (leftT == rightT) $
+    tcExpression (Unary _ op expr) = do
+      expr' <- tcExpressionOf IntT expr
+      return (Unary IntT op expr')
+    tcExpression (Binary _ op left right) = do
+      left' <- tcExpression left
+      right' <- tcExpression right
+      unless (typeOf left' == typeOf right') $
         throwError $
-          "Type mismatch in binary operation: " ++ show leftT ++ " vs " ++ show rightT
-      return leftT
-    tcExpression (Constant t _) = return t
-    tcExpression (Conditional cond trueExpr falseExpr) = do
+          "Type mismatch in binary operation: " ++ show (typeOf left') ++ " vs " ++ show (typeOf right')
+      return (Binary (typeOf left') op left' right')
+    tcExpression (Constant t c) = pure (Constant t c)
+    tcExpression (Conditional _ cond trueExpr falseExpr) = do
       cond' <- tcExpression cond
-      unless (cond' == IntT) $
+      unless (typeOf cond' == IntT) $
         throwError $
           "Condition expression must be of type Int, got " ++ show cond'
-      trueT <- tcExpression trueExpr
-      falseT <- tcExpression falseExpr
-      unless (trueT == falseT) $
+      true' <- tcExpression trueExpr
+      false' <- tcExpression falseExpr
+      unless (typeOf true' == typeOf false') $
         throwError $
-          "Type mismatch in conditional expression: " ++ show trueT ++ " vs " ++ show falseT
-      return trueT
-    tcExpression (FunctionCall name args) = do
-      argsT <- mapM tcExpression args
+          "Type mismatch in conditional expression: " ++ show (typeOf true') ++ " vs " ++ show (typeOf false')
+      return (Conditional (typeOf true') cond' true' false')
+    tcExpression (FunctionCall _ name args) = do
+      args' <- mapM tcExpression args
+      let argsT = map typeOf args'
       funcT <- do
         state <- get
         let (SymbolTable symtab) = symbolTable state
@@ -685,18 +700,19 @@ typecheck program = do
                 ++ show paramTs
                 ++ ", got "
                 ++ show argsT
-          return retT
+          return (FunctionCall retT name args')
         _ -> throwError $ "Type error: " ++ name ++ " is not a function."
     tcExpression (Cast ctype expr) = do
-      _ <- tcExpression expr
-      return ctype
+      expr' <- tcExpression expr
+      return (Cast ctype expr')
 
-    tcExpressionOf :: CType -> Expression -> TypM ()
+    tcExpressionOf :: CType -> Expression () -> TypM (Expression CType)
     tcExpressionOf expectedType expr = do
-      actualType <- tcExpression expr
-      unless (actualType == expectedType) $
+      expr' <- tcExpression expr
+      unless (typeOf expr' == expectedType) $
         throwError $
           "Type mismatch: expected "
             ++ show expectedType
             ++ ", got "
-            ++ show actualType
+            ++ show (typeOf expr')
+      return expr'
