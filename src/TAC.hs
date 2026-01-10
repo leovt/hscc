@@ -31,7 +31,7 @@ data Program
 
 data TopLevel
   = Function String Bool [Value] [Instruction]
-  | StaticVariable String Bool Int
+  | StaticVariable String Bool Integer
   deriving (Show)
 
 data Instruction
@@ -47,7 +47,7 @@ data Instruction
   deriving (Show)
 
 data Value
-  = Constant Int
+  = Constant Integer
   | Variable Bool String {- static duration, name -}
   deriving (Show)
 
@@ -102,7 +102,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
             Nothing -> error $ "symbol not found " ++ name
             Just (SymbolInfo _type (FunctionAttr _ g)) -> g
             _ -> error $ "symbol a function symbol " ++ name
-      return $ Just (Function name global (map (Variable False) params) (instructions ++ [Return (Constant 0)]))
+      return $ Just (Function name global (map (Variable False . fromJust . snd) params) (instructions ++ [Return (Constant 0)]))
     translateFunction (P.FunctionDeclaration _ _ Nothing _ _) = return Nothing
 
     translateBlock :: P.Block -> TransM [Instruction]
@@ -286,7 +286,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       return (Label label : stmt_instructions)
 
     translateExpression :: P.Expression -> TransM ([Instruction], Value)
-    translateExpression (P.Constant c) = do
+    translateExpression (P.Constant _ c) = do
       return ([], Constant c)
     translateExpression (P.Unary P.PreIncrement var@(P.Variable _)) = do
       varid <- newId "tmp"
@@ -434,3 +434,4 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       varid <- newId "tmp.cond"
       let destination = Variable False varid
       return (concat instructions ++ [FunctionCall name args' destination], destination)
+    translateExpression (P.Cast _ _) = error "Casts not implemented in TAC translation."

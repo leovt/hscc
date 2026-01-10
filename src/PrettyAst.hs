@@ -7,6 +7,7 @@ module PrettyAst
   )
 where
 
+import CTypes (CType)
 import Data.List (intercalate)
 import qualified Data.Map as Map
 import Parser
@@ -21,13 +22,17 @@ instance Pretty FunctionDeclaration where
     pretty "Function"
       <+> pretty name
       <+> brackets (pretty (show storage_class) <+> pretty (show scope))
-      <+> parens (pretty (intercalate ", " params))
+      <+> parens (pretty (intercalate ", " (map showParam params)))
       <+> pretty block
   pretty (FunctionDeclaration name params Nothing storage_class scope) =
     pretty "Function"
       <+> pretty name
       <+> brackets (pretty (show storage_class) <+> pretty (show scope))
-      <+> parens (pretty (intercalate ", " params))
+      <+> parens (pretty (intercalate ", " (map showParam params)))
+
+showParam :: (CType, Maybe String) -> String
+showParam (ctype, Just name) = show ctype ++ " " ++ name
+showParam (ctype, Nothing) = show ctype
 
 instance Pretty Declaration where
   pretty (FunDecl fun) = pretty fun

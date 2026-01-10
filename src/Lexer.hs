@@ -4,15 +4,19 @@ module Lexer
     Position (..),
     Span (..),
     LocatedToken,
+    IntSuffix (..),
   )
 where
 
 import Data.List (mapAccumL)
 
+data IntSuffix = NoSuffix | LSuffix deriving (Show, Eq)
+
 data Token
-  = TokInt Int
+  = TokInt Integer IntSuffix
   | TokIdent String
   | TokKeyInt
+  | TokKeyLong
   | TokKeyVoid
   | TokKeyReturn
   | TokKeyGoto
@@ -99,7 +103,8 @@ enumerateSourcePositions = snd . mapAccumL step (1, 1)
 data LexerState
   = LS_Start
   | LS_Ident Position String
-  | LS_Integer Position Int
+  | LS_Integer Position Integer
+  | LS_IntSuffix Position Integer String
   | LS_Punctuation Position String
 
 lexer :: String -> Either String [LocatedToken]
@@ -120,8 +125,14 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
       | otherwise = (LS_Start, Left ("Unexpected " ++ [c]))
     step (LS_Integer start n, Right tokens) (c, pos)
       | c `elem` digits = (LS_Integer start (10 * n + read [c]), Right tokens)
+      | c `elem` int_suffix = (LS_IntSuffix start n [c], Right tokens)
       | c `elem` id_continue = (LS_Integer start n, Left ("Unexpected in Integer " ++ [c]))
-      | otherwise = step (LS_Start, Right ((TokInt n, Span start pos) : tokens)) (c, pos)
+      | otherwise = step (LS_Start, Right ((TokInt n NoSuffix, Span start pos) : tokens)) (c, pos)
+    step (LS_IntSuffix start n suffix, Right tokens) (c, pos)
+      | c `elem` int_suffix = (LS_IntSuffix start n (suffix ++ [c]), Right tokens)
+      | otherwise = case intSuffix suffix of
+          Left err -> (LS_Start, Left err)
+          Right s -> step (LS_Start, Right ((TokInt n s, Span start pos) : tokens)) (c, pos)
     step (LS_Ident start ident, Right tokens) (c, pos)
       | c `elem` id_continue = (LS_Ident start (ident ++ [c]), Right tokens)
       | otherwise = step (LS_Start, Right ((map_keyword ident, Span start pos) : tokens)) (c, pos)
@@ -132,6 +143,7 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
         Nothing -> (LS_Start, Left ("punctuationToken: unexpected punctuation: " ++ show punct))
 
     map_keyword "int" = TokKeyInt
+    map_keyword "long" = TokKeyLong
     map_keyword "void" = TokKeyVoid
     map_keyword "return" = TokKeyReturn
     map_keyword "goto" = TokKeyGoto
@@ -154,6 +166,7 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
     whitespace = " \t\n\r\f\v\0"
     id_start = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
     digits = "0123456789"
+    int_suffix = "lL"
     id_continue = id_start ++ digits
     punctuation = "-~+*/%&|^<>!=?:,"
 
@@ -194,3 +207,9 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
     punctuationToken ":" = Just TokColon
     punctuationToken "," = Just TokComma
     punctuationToken _ = Nothing
+
+    intSuffix :: String -> Either String IntSuffix
+    intSuffix "l" = Right LSuffix
+    intSuffix "L" = Right LSuffix
+    intSuffix "" = Right NoSuffix
+    intSuffix s = Left ("Invalid integer suffix: " ++ s)

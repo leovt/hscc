@@ -18,7 +18,10 @@ module Parser
 where
 
 import CTypes
-import Lexer (LocatedToken, Token (..))
+import Control.Monad (unless)
+import Data.Bits (shiftL)
+import Data.Maybe (isJust)
+import Lexer (IntSuffix (..), LocatedToken, Token (..))
 
 parser :: [LocatedToken] -> Either String Program
 parser loctokens = parseProgram (map fst loctokens)
@@ -51,12 +54,12 @@ data VariableDeclaration
   deriving (Show)
 
 data FunctionDeclaration
-  = FunctionDeclaration String [String] (Maybe Block) StorageClass ScopeLevel
+  = FunctionDeclaration String [(CType, Maybe String)] (Maybe Block) StorageClass ScopeLevel
   deriving (Show)
 
 data Label
   = Label String
-  | CaseLabel Int
+  | CaseLabel Integer
   | DefaultLabel
   deriving (Show)
 
@@ -88,12 +91,13 @@ data Statement
   deriving (Show)
 
 data Expression
-  = Constant Int
+  = Constant CType Integer
   | Variable String
   | Unary UnaryOperator Expression
   | Binary BinaryOperator Expression Expression
   | Conditional Expression Expression Expression
   | FunctionCall String [Expression]
+  | Cast CType Expression
   deriving (Show)
 
 data UnaryOperator
@@ -184,10 +188,14 @@ precedence Assignment = 1
 precedence (CompoundAssignment _) = 1
 
 isSpecifier :: Token -> Bool
-isSpecifier TokKeyInt = True
 isSpecifier TokKeyStatic = True
 isSpecifier TokKeyExtern = True
-isSpecifier _ = False
+isSpecifier token = isTypeSpecifier token
+
+isTypeSpecifier :: Token -> Bool
+isTypeSpecifier TokKeyInt = True
+isTypeSpecifier TokKeyLong = True
+isTypeSpecifier _ = False
 
 associativity :: BinaryOperator -> Int
 associativity op = case op of
@@ -208,16 +216,25 @@ parseProgram tokens = parseProgramSeq tokens []
 
 parseFunction :: ScopeLevel -> String -> StorageClass -> [Token] -> Either String (FunctionDeclaration, [Token])
 parseFunction scope name sclass tail = do
-  let parse_params :: [String] -> [Token] -> Either String ([String], [Token])
+  let parse_params :: [(CType, Maybe String)] -> [Token] -> Either String ([(CType, Maybe String)], [Token])
       parse_params [] (TokKeyVoid : TokCloseParen : rest) = return ([], rest)
       parse_params [] (TokCloseParen : rest) = return ([], rest)
-      parse_params params (TokKeyInt : TokIdent paramName : TokCloseParen : rest) = return (params ++ [paramName], rest)
-      parse_params params (TokKeyInt : TokIdent paramName : TokComma : rest) = parse_params (params ++ [paramName]) rest
-      parse_params _ _ = Left "expected parameter or ')'"
+      parse_params params tokens = do
+        let (types, rest) = span isTypeSpecifier tokens
+        ctype <- parseType types
+        let (maybeName, rest'') = case rest of
+              (TokIdent paramName : rest') -> (Just paramName, rest')
+              _ -> (Nothing, rest)
+        case rest'' of
+          TokCloseParen : rest''' -> return (params ++ [(ctype, maybeName)], rest''')
+          TokComma : rest''' -> parse_params (params ++ [(ctype, maybeName)]) rest'''
+          _ -> Left "expected parameter or ')'"
   (params, rest) <- parse_params [] tail
   case rest of
     TokOpenBrace : rest' -> do
       (block, rest'') <- parseBlock (TokOpenBrace : rest')
+      unless (all (isJust . snd) params) $
+        Left "all function parameters must have names"
       return (FunctionDeclaration name params (Just block) sclass scope, rest'')
     TokSemicolon : rest -> return (FunctionDeclaration name params Nothing sclass scope, rest)
     _ -> Left "expected function body or ';' after function declaration"
@@ -283,7 +300,7 @@ parseStatement (TokKeyDefault : TokColon : tail) = do
     Nothing -> Left "expected statement after default label"
     Just (stmt, rest) -> return (Just (LabelledStatement DefaultLabel stmt, rest))
 parseStatement (TokKeyDefault : _) = Left "expected ':' after default"
-parseStatement (TokKeyCase : TokInt n : TokColon : tail) = do
+parseStatement (TokKeyCase : TokInt n _ : TokColon : tail) = do
   let label = CaseLabel n
   suite <- parseStatement tail
   case suite of
@@ -394,6 +411,7 @@ decodeSpecifiers :: [Token] -> Either String (CType, StorageClass)
 decodeSpecifiers specifiers = do
   let go [] (sc, tp) = return (sc, tp)
       go (TokKeyInt : toks) (sc, tp) = go toks (sc, TokKeyInt : tp)
+      go (TokKeyLong : toks) (sc, tp) = go toks (sc, TokKeyLong : tp)
       go (TokKeyStatic : toks) (sc, tp) = go toks (TokKeyStatic : sc, tp)
       go (TokKeyExtern : toks) (sc, tp) = go toks (TokKeyExtern : sc, tp)
       go (tok : _) _ = Left $ "Internal Error: not a specifier " ++ show tok
@@ -403,10 +421,15 @@ decodeSpecifiers specifiers = do
     [TokKeyStatic] -> return StorageStatic
     [TokKeyExtern] -> return StorageExtern
     _ -> Left "Multiple Storage Specifiers."
-  ctype <- case types of
-    [TokKeyInt] -> return IntT
-    _ -> Left $ "Illegal Type " ++ show types
+  ctype <- parseType types
   return (ctype, storage')
+
+parseType :: [Token] -> Either String CType
+parseType [TokKeyInt] = return IntT
+parseType [TokKeyLong] = return LongIntT
+parseType [TokKeyLong, TokKeyInt] = return LongIntT
+parseType [TokKeyInt, TokKeyLong] = return LongIntT
+parseType tokens = Left $ "Illegal type specifiers " ++ show tokens
 
 parseDeclaration :: ScopeLevel -> [Token] -> Either String (Declaration, [Token])
 parseDeclaration scope tokens = do
@@ -442,7 +465,9 @@ parseFactor tokens = do
     parseFactorSuffix expr rest = Right (expr, rest)
 
 parseFactorPrefix :: [Token] -> Either String (Expression, [Token])
-parseFactorPrefix ((TokInt n) : tail) = return (Constant n, tail)
+parseFactorPrefix ((TokInt n suffix) : tail) = do
+  const <- parseIntLiteral n suffix
+  return (const, tail)
 parseFactorPrefix ((TokIdent n) : TokOpenParen : tail) = do
   let parse_arguments :: [Expression] -> [Token] -> Either String ([Expression], [Token])
       parse_arguments [] (TokCloseParen : rest) = return ([], rest)
@@ -471,10 +496,20 @@ parseFactorPrefix (TokDblMinus : tail) = do
   (expr, rest) <- parseFactor tail
   return (Unary PreDecrement expr, rest)
 parseFactorPrefix (TokOpenParen : tail) = do
-  (expr, rest) <- parseExpression tail
-  case rest of
-    TokCloseParen : rest' -> return (expr, rest')
-    _ -> Left "expected ')'"
+  let (types, rest) = span isTypeSpecifier tail
+  if null types
+    then do
+      (expr, rest') <- parseExpression tail
+      case rest' of
+        TokCloseParen : rest'' -> return (expr, rest'')
+        _ -> Left "expected ')'"
+    else do
+      ctype <- parseType types
+      case rest of
+        TokCloseParen : tail' -> do
+          (expr, rest') <- parseFactor tail'
+          return (Cast ctype expr, rest')
+        _ -> Left "expected ')'"
 parseFactorPrefix (token : _) = Left $ "unexpected token" ++ show token
 parseFactorPrefix [] = Left "unexpected end of input"
 
@@ -511,3 +546,12 @@ parseExpression = parse_expression_prec 0
                   parse_rhs min_prec (Binary operator left right) rest'
         Nothing -> Right (left, token : rest)
     parse_rhs _ left [] = Right (left, [])
+
+parseIntLiteral :: Integer -> IntSuffix -> Either String Expression
+parseIntLiteral n NoSuffix
+  | n < 1 `shiftL` 31 = Right (Constant IntT n)
+  | n < 1 `shiftL` 63 = Right (Constant LongIntT n)
+  | otherwise = Left "Integer literal out of range"
+parseIntLiteral n LSuffix
+  | n < 1 `shiftL` 63 = Right (Constant LongIntT n)
+  | otherwise = Left "Integer literal out of range"

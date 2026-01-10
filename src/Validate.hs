@@ -38,7 +38,7 @@ data LabelState
   deriving (Show, Eq)
 
 data SwitchLabels
-  = Case Int
+  = Case Integer
   | Default
   deriving (Show, Eq, Ord)
 
@@ -73,7 +73,7 @@ data SymbolState
   deriving (Show, Eq)
 
 data Initializer
-  = Initial Int
+  = Initial Integer
   | Tentative
   | NoInitializer
   deriving (Show, Eq)
@@ -256,7 +256,7 @@ resolve program =
       when (isNestedFunction outer_names maybeBody) $ throwError $ "Nested function definitions are not allowed." ++ show maybeBody
       when (scope == BlockScope && sclass == StorageStatic) $ throwError "Nested static function declarations are not allowed."
       put state {labels = Just Data.Map.empty, names = Data.Map.empty : outer_names} -- new scope for function locals
-      params' <- mapM (resolveNameDecl NoLinkage) params
+      params' <- mapM resolveParam params
       maybeBody' <- traverse (resolveBlock False) maybeBody
       state <- get
       case labels state of
@@ -270,6 +270,12 @@ resolve program =
     isMissingLabel :: LabelState -> Bool
     isMissingLabel (Missing _) = True
     isMissingLabel _ = False
+
+    resolveParam :: (CType, Maybe String) -> ResM (CType, Maybe String)
+    resolveParam (ctype, Just name) = do
+      name' <- resolveNameDecl NoLinkage name
+      return (ctype, Just name')
+    resolveParam x = return x
 
     resolveBlock :: Bool -> Block -> ResM Block
     resolveBlock addScope (Block items) = do
@@ -431,7 +437,7 @@ resolve program =
       left' <- resolveExpression left
       right' <- resolveExpression right
       return (Binary op left' right')
-    resolveExpression (Constant c) = pure (Constant c)
+    resolveExpression (Constant c t) = pure (Constant c t)
     resolveExpression (Conditional cond trueExpr falseExpr) = do
       cond' <- resolveExpression cond
       trueExpr' <- resolveExpression trueExpr
@@ -441,6 +447,9 @@ resolve program =
       name' <- resolveName name
       args' <- mapM resolveExpression args
       return (FunctionCall name' args')
+    resolveExpression (Cast ctype expr) = do
+      expr' <- resolveExpression expr
+      return (Cast ctype expr')
 
 typecheck :: Program -> Either String (Program, SymbolTable)
 typecheck program = do
@@ -485,14 +494,15 @@ typecheck program = do
 
       let symtab' = Data.Map.insert name sinfo' symtab
       put state {symbolTable = SymbolTable symtab'}
-      let tcParam :: String -> TypM String
-          tcParam paramName = do
+      let tcParam :: (CType, Maybe String) -> TypM (CType, Maybe String)
+          tcParam (ctype, Just paramName) = do
             state <- get
             let (SymbolTable symtab) = symbolTable state
-                symbol = SymbolInfo IntT LocalVariableAttr
+                symbol = SymbolInfo ctype LocalVariableAttr
                 symtab' = Data.Map.insert paramName symbol symtab
             put state {symbolTable = SymbolTable symtab'}
-            return paramName
+            return (ctype, Just paramName)
+          tcParam (_, Nothing) = throwError "All function parameters must have names."
       params' <- mapM tcParam params
       maybeBody' <- traverse tcBlock maybeBody
       return (FunctionDeclaration name params' maybeBody' sclass scope)
@@ -513,7 +523,7 @@ typecheck program = do
     tcDeclaration decl@(VarDecl (VariableDeclaration name init StorageStatic BlockScope)) = do
       let varT = IntT
       syminit <- case init of
-        Just (Constant n) -> return $ Initial n
+        Just (Constant _ n) -> return $ Initial n
         Nothing -> return $ Initial 0
         _ -> throwError "Implementation limitation: only constants as initializer"
       state <- get
@@ -531,7 +541,7 @@ typecheck program = do
       return decl
     tcDeclaration decl@(VarDecl (VariableDeclaration name init sclass FileScope)) = do
       syminit <- case init of
-        Just (Constant n) -> return (Initial n)
+        Just (Constant _ n) -> return (Initial n)
         Just _ -> throwError "Limitation: only constant initializers for global variables"
         Nothing ->
           return $
@@ -645,7 +655,7 @@ typecheck program = do
         throwError $
           "Type mismatch in binary operation: " ++ show leftT ++ " vs " ++ show rightT
       return leftT
-    tcExpression (Constant _) = return IntT {- TODO: constants can have different types later -}
+    tcExpression (Constant t _) = return t
     tcExpression (Conditional cond trueExpr falseExpr) = do
       cond' <- tcExpression cond
       unless (cond' == IntT) $
@@ -677,6 +687,9 @@ typecheck program = do
                 ++ show argsT
           return retT
         _ -> throwError $ "Type error: " ++ name ++ " is not a function."
+    tcExpression (Cast ctype expr) = do
+      _ <- tcExpression expr
+      return ctype
 
     tcExpressionOf :: CType -> Expression -> TypM ()
     tcExpressionOf expectedType expr = do

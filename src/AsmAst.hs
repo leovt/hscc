@@ -20,7 +20,7 @@ data Program
 
 data TopLevel
   = Function String Bool [Instruction]
-  | StaticVariable String Bool Int
+  | StaticVariable String Bool Integer
   deriving (Show)
 
 data Instruction
@@ -66,7 +66,7 @@ data MemoryOperand
   deriving (Show, Eq, Ord)
 
 data Operand
-  = Imm Int
+  = Imm Integer
   | Register Reg
   | Pseudo String
   | Memory MemoryOperand
