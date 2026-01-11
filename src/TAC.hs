@@ -7,7 +7,7 @@ module TAC
   )
 where
 
-import CTypes (CType (IntT))
+import CTypes (CType)
 import Control.Monad.State
 import Data.Map (toList)
 import qualified Data.Map
@@ -97,23 +97,23 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
     translateDeclaration _ = return Nothing
 
     translateFunction :: P.FunctionDeclaration CType -> TransM (Maybe TopLevel)
-    translateFunction (P.FunctionDeclaration name params (Just body) _ _) = do
+    translateFunction (P.FunctionDeclaration retT name params (Just body) _ _) = do
       instructions <- translateBlock body
       let global = case Data.Map.lookup name symtab of
             Nothing -> error $ "symbol not found " ++ name
             Just (SymbolInfo _type (FunctionAttr _ g)) -> g
             _ -> error $ "symbol a function symbol " ++ name
       return $ Just (Function name global (map (Variable False . fromJust . snd) params) (instructions ++ [Return (Constant 0)]))
-    translateFunction (P.FunctionDeclaration _ _ Nothing _ _) = return Nothing
+    translateFunction (P.FunctionDeclaration _ _ _ Nothing _ _) = return Nothing
 
     translateBlock :: P.Block CType -> TransM [Instruction]
     translateBlock (P.Block items) = concat <$> mapM translateBlockItem items
 
     translateBlockItem :: P.BlockItem CType -> TransM [Instruction]
     translateBlockItem (P.Stmt s) = translateStatement s
-    translateBlockItem (P.Decl (P.VarDecl (P.VariableDeclaration _ _ P.StorageStatic _))) = return []
-    translateBlockItem (P.Decl (P.VarDecl (P.VariableDeclaration name (Just expr) _ _))) = do
-      (instr, _value) <- translateExpression (P.Binary IntT P.Assignment (P.Variable IntT name) expr)
+    translateBlockItem (P.Decl (P.VarDecl (P.VariableDeclaration _ _ _ P.StorageStatic _))) = return []
+    translateBlockItem (P.Decl (P.VarDecl (P.VariableDeclaration retT name (Just expr) _ _))) = do
+      (instr, _value) <- translateExpression (P.Binary retT P.Assignment (P.Variable retT name) expr)
       return instr
     translateBlockItem (P.Decl _) = return []
 
@@ -193,8 +193,8 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
         Just (P.ForInitExpr expr) -> do
           (instr, _value) <- translateExpression expr
           return instr
-        Just (P.ForInitDecl (P.VarDecl (P.VariableDeclaration name (Just expr) _ _))) -> do
-          (instr, _value) <- translateExpression (P.Binary IntT P.Assignment (P.Variable IntT name) expr)
+        Just (P.ForInitDecl (P.VarDecl (P.VariableDeclaration varT name (Just expr) _ _))) -> do
+          (instr, _value) <- translateExpression (P.Binary varT P.Assignment (P.Variable varT name) expr)
           return instr
         Just (P.ForInitDecl _) -> return []
       cond_instructions <- case maybeCond of

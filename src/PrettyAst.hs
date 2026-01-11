@@ -18,14 +18,16 @@ instance (Show t) => Pretty (Program t) where
   pretty (Program f) = pretty f
 
 instance (Show t) => Pretty (FunctionDeclaration t) where
-  pretty (FunctionDeclaration name params (Just block) storage_class scope) =
+  pretty (FunctionDeclaration retT name params (Just block) storage_class scope) =
     pretty "Function"
+      <+> pretty (show retT)
       <+> pretty name
       <+> brackets (pretty (show storage_class) <+> pretty (show scope))
       <+> parens (pretty (intercalate ", " (map showParam params)))
       <+> pretty block
-  pretty (FunctionDeclaration name params Nothing storage_class scope) =
+  pretty (FunctionDeclaration retT name params Nothing storage_class scope) =
     pretty "Function"
+      <+> pretty (show retT)
       <+> pretty name
       <+> brackets (pretty (show storage_class) <+> pretty (show scope))
       <+> parens (pretty (intercalate ", " (map showParam params)))

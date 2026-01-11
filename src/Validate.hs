@@ -8,14 +8,14 @@ module Validate
   )
 where
 
-import CTypes (CType (..))
-import Control.Monad (unless, when)
+import CTypes (CType (..), commonType, isIntegralType)
+import Control.Monad (unless, when, zipWithM)
 import Control.Monad.Except
 import Control.Monad.State
 import qualified Data.Map
 import Data.Maybe (isJust)
 import Parser
-  ( BinaryOperator (Assignment, CompoundAssignment),
+  ( BinaryOperator (Assignment, CompoundAssignment, LogicAnd, LogicOr),
     Block (..),
     BlockItem (..),
     Declaration (..),
@@ -62,7 +62,8 @@ data ResolutionState = ResolutionState
 
 {- HLINT ignore "Use newtype instead of data" -}
 data TypecheckState = TypecheckState
-  { symbolTable :: SymbolTable
+  { symbolTable :: SymbolTable,
+    maybeReturnType :: Maybe CType
   }
 
 type ResM a = ExceptT String (State ResolutionState) a -- the resolution monad encapsulating the resolution state
@@ -232,7 +233,7 @@ resolve program =
       return (FunDecl func')
 
     resolveVariableDeclaration :: VariableDeclaration () -> ResM (VariableDeclaration ())
-    resolveVariableDeclaration (VariableDeclaration name init sclass scope) = do
+    resolveVariableDeclaration (VariableDeclaration ctype name init sclass scope) = do
       info <- lookupName name
       let linkage = case (sclass, scope) of
             (StorageNone, FileScope) -> ExternalLinkage
@@ -254,10 +255,10 @@ resolve program =
         (inner : rest) -> put state {names = Data.Map.insert name (name', linkage) inner : rest}
       {- resolve the initializer after the name has been registered. the declared name is in scope for the initializer -}
       init' <- mapM resolveExpression init
-      return (VariableDeclaration name' init' sclass scope)
+      return (VariableDeclaration ctype name' init' sclass scope)
 
     resolveFunctionDeclaration :: FunctionDeclaration () -> ResM (FunctionDeclaration ())
-    resolveFunctionDeclaration (FunctionDeclaration name params maybeBody sclass scope) = do
+    resolveFunctionDeclaration (FunctionDeclaration ctype name params maybeBody sclass scope) = do
       name' <- resolveNameDecl ExternalLinkage name
       state <- get
       let outer_names = names state
@@ -277,7 +278,7 @@ resolve program =
               "Some labels were declared but not defined: " ++ show (filter isMissingLabel (Data.Map.elems labels_map))
         Nothing -> return ()
       put state {labels = Nothing, names = outer_names} -- pop function scope
-      return (FunctionDeclaration name' params' maybeBody' sclass scope)
+      return (FunctionDeclaration ctype name' params' maybeBody' sclass scope)
     isMissingLabel :: LabelState -> Bool
     isMissingLabel (Missing _) = True
     isMissingLabel _ = False
@@ -358,10 +359,10 @@ resolve program =
         Just (ForInitExpr expr) -> do
           expr' <- resolveExpression expr
           return (Just (ForInitExpr expr'))
-        Just (ForInitDecl (VarDecl (VariableDeclaration name init StorageNone BlockScope))) -> do
+        Just (ForInitDecl (VarDecl (VariableDeclaration ctype name init StorageNone BlockScope))) -> do
           name' <- resolveNameDecl NoLinkage name
           init' <- mapM resolveExpression init
-          return (Just (ForInitDecl (VarDecl (VariableDeclaration name' init' StorageNone BlockScope))))
+          return (Just (ForInitDecl (VarDecl (VariableDeclaration ctype name' init' StorageNone BlockScope))))
         Just (ForInitDecl _) -> throwError "Illegal for-loop initializer."
       maybeCond' <- mapM resolveExpression maybeCond
       maybeInc' <- mapM resolveExpression maybeInc
@@ -470,7 +471,8 @@ typecheck program = do
   where
     initState =
       TypecheckState
-        { symbolTable = SymbolTable Data.Map.empty
+        { symbolTable = SymbolTable Data.Map.empty,
+          maybeReturnType = Nothing
         }
 
     tcProgram :: UntypedProgram -> TypM TypedProgram
@@ -479,8 +481,8 @@ typecheck program = do
       return (Program decls')
 
     tcFunctionDeclaration :: FunctionDeclaration () -> TypM (FunctionDeclaration CType)
-    tcFunctionDeclaration (FunctionDeclaration name params maybeBody sclass scope) = do
-      let funcT = FuncT IntT (replicate (length params) IntT)
+    tcFunctionDeclaration (FunctionDeclaration retT name params maybeBody sclass scope) = do
+      let funcT = FuncT retT (map fst params)
           thisState = case maybeBody of
             Just _ -> SymDefined
             Nothing -> SymDeclared
@@ -515,12 +517,18 @@ typecheck program = do
             return (ctype, Just paramName)
           tcParam (_, Nothing) = throwError "All function parameters must have names."
       params' <- mapM tcParam params
-      maybeBody' <- traverse tcBlock maybeBody
-      return (FunctionDeclaration name params' maybeBody' sclass scope)
+      maybeBody' <- case maybeBody of
+        Just body -> do
+          prevRetT <- gets maybeReturnType
+          modify $ \state -> state {maybeReturnType = Just retT}
+          body' <- tcBlock body
+          modify $ \state -> state {maybeReturnType = prevRetT}
+          return (Just body')
+        Nothing -> return Nothing
+      return (FunctionDeclaration retT name params' maybeBody' sclass scope)
 
     tcDeclaration :: Declaration () -> TypM (Declaration CType)
-    tcDeclaration (VarDecl (VariableDeclaration name init StorageExtern BlockScope)) = do
-      let varT = IntT
+    tcDeclaration (VarDecl (VariableDeclaration varT name init StorageExtern BlockScope)) = do
       when (isJust init) (throwError "Initializer on local extern declaration.")
       state <- get
       let (SymbolTable symtab) = symbolTable state
@@ -531,9 +539,8 @@ typecheck program = do
           put state {symbolTable = SymbolTable $ Data.Map.insert name symbol symtab}
           return ()
       init' <- mapM tcExpression init
-      return (VarDecl (VariableDeclaration name init' StorageExtern BlockScope))
-    tcDeclaration (VarDecl (VariableDeclaration name init StorageStatic BlockScope)) = do
-      let varT = IntT
+      return (VarDecl (VariableDeclaration varT name init' StorageExtern BlockScope))
+    tcDeclaration (VarDecl (VariableDeclaration varT name init StorageStatic BlockScope)) = do
       syminit <- case init of
         Just (Constant _ n) -> return $ Initial n
         Nothing -> return $ Initial 0
@@ -543,16 +550,16 @@ typecheck program = do
       let symbol = SymbolInfo varT (StaticVariableAttr syminit False)
       put state {symbolTable = SymbolTable $ Data.Map.insert name symbol symtab}
       init' <- mapM tcExpression init
-      return (VarDecl (VariableDeclaration name init' StorageStatic BlockScope))
-    tcDeclaration (VarDecl (VariableDeclaration name init StorageNone BlockScope)) = do
-      let varT = IntT
+      return (VarDecl (VariableDeclaration varT name init' StorageStatic BlockScope))
+    tcDeclaration (VarDecl (VariableDeclaration varT name init StorageNone BlockScope)) = do
       state <- get
       let (SymbolTable symtab) = symbolTable state
       let symbol = SymbolInfo varT LocalVariableAttr
       put state {symbolTable = SymbolTable $ Data.Map.insert name symbol symtab}
-      init' <- mapM (tcExpressionOf varT) init
-      return (VarDecl (VariableDeclaration name init' StorageNone BlockScope))
-    tcDeclaration decl@(VarDecl (VariableDeclaration name init sclass FileScope)) = do
+      init' <- mapM tcExpression init
+      init'' <- mapM (convertTo varT) init'
+      return (VarDecl (VariableDeclaration varT name init'' StorageNone BlockScope))
+    tcDeclaration decl@(VarDecl (VariableDeclaration varT name init sclass FileScope)) = do
       syminit <- case init of
         Just (Constant _ n) -> return (Initial n)
         Just _ -> throwError "Limitation: only constant initializers for global variables"
@@ -561,7 +568,6 @@ typecheck program = do
             if sclass == StorageExtern
               then NoInitializer
               else Tentative
-      let varT = IntT
       state <- get
       let (SymbolTable symtab) = symbolTable state
       (global, syminit) <- case Data.Map.lookup name symtab of
@@ -584,8 +590,9 @@ typecheck program = do
         _ -> return (sclass /= StorageStatic, syminit)
       let symbol = SymbolInfo varT (StaticVariableAttr syminit global)
       put state {symbolTable = SymbolTable $ Data.Map.insert name symbol symtab}
-      init' <- mapM (tcExpressionOf varT) init
-      return (VarDecl (VariableDeclaration name init' sclass FileScope))
+      init' <- mapM tcExpression init
+      init'' <- mapM (convertTo varT) init'
+      return (VarDecl (VariableDeclaration varT name init'' sclass FileScope))
     tcDeclaration (FunDecl func) = do
       func' <- tcFunctionDeclaration func
       return (FunDecl func')
@@ -605,17 +612,22 @@ typecheck program = do
 
     tcStatement :: Statement () -> TypM (Statement CType)
     tcStatement (ReturnStatement expr) = do
-      let retT = IntT {- TODO: function return type lookup -}
-      expr' <- tcExpressionOf retT expr
-      return (ReturnStatement expr')
+      retT <- gets maybeReturnType
+      case retT of
+        Nothing -> throwError "Return statement outside of function."
+        Just retT -> do
+          expr' <- tcExpression expr
+          expr'' <- convertTo retT expr'
+          return (ReturnStatement expr'')
     tcStatement (ExpressionStatement expr) = do
       expr' <- tcExpression expr
       return (ExpressionStatement expr')
     tcStatement (IfStatement cond thenStmt maybeElseStmt) = do
-      cond' <- tcExpressionOf IntT cond
+      cond' <- tcExpression cond
+      cond'' <- convertTo IntT cond'
       thenStmt' <- tcStatement thenStmt
       maybeElseStmt' <- mapM tcStatement maybeElseStmt
-      return (IfStatement cond' thenStmt' maybeElseStmt')
+      return (IfStatement cond'' thenStmt' maybeElseStmt')
     tcStatement (LabelledStatement label stmt) = do
       stmt' <- tcStatement stmt
       return (LabelledStatement label stmt')
@@ -625,13 +637,15 @@ typecheck program = do
       return (CompoundStatement block')
     tcStatement NullStatement = return NullStatement
     tcStatement (WhileStatement cond stmt) = do
-      cond' <- tcExpressionOf IntT cond
+      cond' <- tcExpression cond
+      cond'' <- convertTo IntT cond'
       stmt' <- tcStatement stmt
-      return (WhileStatement cond' stmt')
+      return (WhileStatement cond'' stmt')
     tcStatement (DoWhileStatement cond stmt) = do
-      cond' <- tcExpressionOf IntT cond
+      cond' <- tcExpression cond
+      cond'' <- convertTo IntT cond'
       stmt' <- tcStatement stmt
-      return (DoWhileStatement cond' stmt')
+      return (DoWhileStatement cond'' stmt')
     tcStatement (ForStatement maybeInit maybeCond maybeInc stmt) = do
       maybeInit' <- case maybeInit of
         Nothing -> return Nothing
@@ -641,14 +655,18 @@ typecheck program = do
         Just (ForInitDecl decl) -> do
           decl' <- tcDeclaration decl
           return (Just (ForInitDecl decl'))
-      maybeCond' <- mapM (tcExpressionOf IntT) maybeCond
+      maybeCond' <- mapM tcExpression maybeCond
+      maybeCond'' <- mapM (convertTo IntT) maybeCond'
       maybeInc' <- mapM tcExpression maybeInc
       stmt' <- tcStatement stmt
-      return (ForStatement maybeInit' maybeCond' maybeInc' stmt')
+      return (ForStatement maybeInit' maybeCond'' maybeInc' stmt')
     tcStatement BreakStatement = return BreakStatement
     tcStatement ContinueStatement = return ContinueStatement
     tcStatement (SwitchStatement expr stmt) = do
-      expr' <- tcExpressionOf IntT expr
+      expr' <- tcExpression expr
+      unless (isIntegralType (typeOf expr')) $
+        throwError $
+          "Switch expression must be integral, got " ++ show expr'
       stmt' <- tcStatement stmt
       return (SwitchStatement expr' stmt')
 
@@ -659,28 +677,35 @@ typecheck program = do
       case Data.Map.lookup name symtab of
         Just sinfo -> return (Variable (symbolType sinfo) name)
         Nothing -> throwError $ "tcExpression: Undeclared variable " ++ name
+    tcExpression (Unary _ LogicNot expr) = do
+      expr' <- tcExpression expr
+      return (Unary IntT LogicNot expr')
     tcExpression (Unary _ op expr) = do
-      expr' <- tcExpressionOf IntT expr
-      return (Unary IntT op expr')
-    tcExpression (Binary _ op left right) = do
+      expr' <- tcExpression expr
+      when (op == PreIncrement || op == PreDecrement || op == PostIncrement || op == PostDecrement) $
+        unless (isIntegralType (typeOf expr')) $
+          throwError $
+            "Increment/decrement operator applied to non-integral type: " ++ show expr'
+      return (Unary (typeOf expr') op expr')
+    tcExpression (Binary _ LogicAnd left right) = do
       left' <- tcExpression left
       right' <- tcExpression right
-      unless (typeOf left' == typeOf right') $
-        throwError $
-          "Type mismatch in binary operation: " ++ show (typeOf left') ++ " vs " ++ show (typeOf right')
-      return (Binary (typeOf left') op left' right')
+      return (Binary IntT LogicAnd left' right')
+    tcExpression (Binary _ LogicOr left right) = do
+      left' <- tcExpression left
+      right' <- tcExpression right
+      return (Binary IntT LogicOr left' right')
+    tcExpression (Binary _ op left right) = do
+      (commonT, left', right') <- makeCommonType left right
+      return (Binary commonT op left' right')
     tcExpression (Constant t c) = pure (Constant t c)
     tcExpression (Conditional _ cond trueExpr falseExpr) = do
       cond' <- tcExpression cond
-      unless (typeOf cond' == IntT) $
+      unless (isIntegralType (typeOf cond')) $
         throwError $
-          "Condition expression must be of type Int, got " ++ show cond'
-      true' <- tcExpression trueExpr
-      false' <- tcExpression falseExpr
-      unless (typeOf true' == typeOf false') $
-        throwError $
-          "Type mismatch in conditional expression: " ++ show (typeOf true') ++ " vs " ++ show (typeOf false')
-      return (Conditional (typeOf true') cond' true' false')
+          "Condition expression must be integral, got " ++ show cond'
+      (commonT, true', false') <- makeCommonType trueExpr falseExpr
+      return (Conditional commonT cond' true' false')
     tcExpression (FunctionCall _ name args) = do
       args' <- mapM tcExpression args
       let argsT = map typeOf args'
@@ -692,27 +717,46 @@ typecheck program = do
           Nothing -> throwError $ "tcExpression: Undeclared function " ++ name
       case funcT of
         FuncT retT paramTs -> do
-          unless (argsT == paramTs) $
+          unless (length argsT == length paramTs) $
             throwError $
               "Function "
                 ++ name
-                ++ " called with incorrect argument types: expected "
-                ++ show paramTs
+                ++ " called with incorrect number of arguments: expected "
+                ++ show (length paramTs)
                 ++ ", got "
-                ++ show argsT
-          return (FunctionCall retT name args')
+                ++ show (length argsT)
+          args'' <- zipWithM convertTo paramTs args'
+          return (FunctionCall retT name args'')
         _ -> throwError $ "Type error: " ++ name ++ " is not a function."
     tcExpression (Cast ctype expr) = do
       expr' <- tcExpression expr
-      return (Cast ctype expr')
+      convertTo ctype expr'
 
-    tcExpressionOf :: CType -> Expression () -> TypM (Expression CType)
-    tcExpressionOf expectedType expr = do
-      expr' <- tcExpression expr
-      unless (typeOf expr' == expectedType) $
-        throwError $
-          "Type mismatch: expected "
-            ++ show expectedType
-            ++ ", got "
-            ++ show (typeOf expr')
-      return expr'
+    convertTo :: CType -> Expression CType -> TypM (Expression CType)
+    convertTo targetType expr
+      | exprType == targetType =
+          return expr
+      | isIntegralType (typeOf expr) && isIntegralType targetType =
+          return (Cast targetType expr)
+      | otherwise = throwError $ "Cannot convert type " ++ show (typeOf expr) ++ " to " ++ show targetType
+      where
+        exprType = typeOf expr
+
+    makeCommonType :: Expression () -> Expression () -> TypM (CType, Expression CType, Expression CType)
+    makeCommonType left right = do
+      left' <- tcExpression left
+      right' <- tcExpression right
+      commonT <- forceCommonType left' right'
+      left'' <- convertTo commonT left'
+      right'' <- convertTo commonT right'
+      return (commonT, left'', right'')
+      where
+        forceCommonType :: Expression CType -> Expression CType -> TypM CType
+        forceCommonType left right = case commonType (typeOf left) (typeOf right) of
+          Just t -> return t
+          Nothing ->
+            throwError $
+              "Incompatible types: "
+                ++ show (typeOf left)
+                ++ " and "
+                ++ show (typeOf right)

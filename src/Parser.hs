@@ -56,11 +56,11 @@ data Declaration t
   deriving (Show)
 
 data VariableDeclaration t
-  = VariableDeclaration String (Maybe (Expression t)) StorageClass ScopeLevel
+  = VariableDeclaration CType String (Maybe (Expression t)) StorageClass ScopeLevel
   deriving (Show)
 
 data FunctionDeclaration t
-  = FunctionDeclaration String [(CType, Maybe String)] (Maybe (Block t)) StorageClass ScopeLevel
+  = FunctionDeclaration CType String [(CType, Maybe String)] (Maybe (Block t)) StorageClass ScopeLevel
   deriving (Show)
 
 data Label
@@ -114,7 +114,7 @@ data UnaryOperator
   | PreDecrement
   | PostIncrement
   | PostDecrement
-  deriving (Show)
+  deriving (Eq, Show)
 
 data BinaryOperator
   = Add
@@ -220,8 +220,8 @@ parseProgram tokens = parseProgramSeq tokens []
         Nothing -> Left "expected declaration"
         Just (fun, rest) -> parseProgramSeq rest (fun : acc)
 
-parseFunction :: ScopeLevel -> String -> StorageClass -> [Token] -> Either String (FunctionDeclaration (), [Token])
-parseFunction scope name sclass tail = do
+parseFunction :: ScopeLevel -> String -> StorageClass -> CType -> [Token] -> Either String (FunctionDeclaration (), [Token])
+parseFunction scope name sclass ctype tail = do
   let parse_params :: [(CType, Maybe String)] -> [Token] -> Either String ([(CType, Maybe String)], [Token])
       parse_params [] (TokKeyVoid : TokCloseParen : rest) = return ([], rest)
       parse_params [] (TokCloseParen : rest) = return ([], rest)
@@ -241,8 +241,8 @@ parseFunction scope name sclass tail = do
       (block, rest'') <- parseBlock (TokOpenBrace : rest')
       unless (all (isJust . snd) params) $
         Left "all function parameters must have names"
-      return (FunctionDeclaration name params (Just block) sclass scope, rest'')
-    TokSemicolon : rest -> return (FunctionDeclaration name params Nothing sclass scope, rest)
+      return (FunctionDeclaration ctype name params (Just block) sclass scope, rest'')
+    TokSemicolon : rest -> return (FunctionDeclaration ctype name params Nothing sclass scope, rest)
     _ -> Left "expected function body or ';' after function declaration"
 
 parseBlock :: [Token] -> Either String (Block (), [Token])
@@ -440,24 +440,24 @@ parseType tokens = Left $ "Illegal type specifiers " ++ show tokens
 parseDeclaration :: ScopeLevel -> [Token] -> Either String (Declaration (), [Token])
 parseDeclaration scope tokens = do
   let (specifiers, rest) = span isSpecifier tokens
-  (_ctype, sclass) <- decodeSpecifiers specifiers
+  (ctype, sclass) <- decodeSpecifiers specifiers
   case rest of
     ((TokIdent name) : TokOpenParen : rest) -> do
-      (decl, rest') <- parseFunction scope name sclass rest
+      (decl, rest') <- parseFunction scope name sclass ctype rest
       return (FunDecl decl, rest')
     ((TokIdent name) : rest) -> do
-      (decl, rest') <- parseVariableDeclaration scope name sclass rest
+      (decl, rest') <- parseVariableDeclaration scope name sclass ctype rest
       return (VarDecl decl, rest')
     _ -> Left "expected declaration."
 
-parseVariableDeclaration :: ScopeLevel -> String -> StorageClass -> [Token] -> Either String (VariableDeclaration (), [Token])
-parseVariableDeclaration scope name sclass tokens = case tokens of
+parseVariableDeclaration :: ScopeLevel -> String -> StorageClass -> CType -> [Token] -> Either String (VariableDeclaration (), [Token])
+parseVariableDeclaration scope name sclass ctype tokens = case tokens of
   (TokEqual : rest) -> do
     (expr, rest') <- parseExpression rest
     case rest' of
-      TokSemicolon : rest'' -> return (VariableDeclaration name (Just expr) sclass scope, rest'')
+      TokSemicolon : rest'' -> return (VariableDeclaration ctype name (Just expr) sclass scope, rest'')
       _ -> Left "expected ';' after variable declaration"
-  (TokSemicolon : rest) -> return (VariableDeclaration name Nothing sclass scope, rest)
+  (TokSemicolon : rest) -> return (VariableDeclaration ctype name Nothing sclass scope, rest)
   _ -> Left "expected ';' or '=' after variable declaration"
 
 parseFactor :: [Token] -> Either String (Expression (), [Token])
