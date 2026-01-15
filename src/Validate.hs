@@ -5,6 +5,7 @@ module Validate
     SymbolInfo (..),
     SymbolAttributes (..),
     Initializer (..),
+    typeOf,
   )
 where
 
@@ -15,7 +16,7 @@ import Control.Monad.State
 import qualified Data.Map
 import Data.Maybe (isJust)
 import Parser
-  ( BinaryOperator (Assignment, CompoundAssignment, LogicAnd, LogicOr),
+  ( BinaryOperator (..),
     Block (..),
     BlockItem (..),
     Declaration (..),
@@ -624,10 +625,12 @@ typecheck program = do
       return (ExpressionStatement expr')
     tcStatement (IfStatement cond thenStmt maybeElseStmt) = do
       cond' <- tcExpression cond
-      cond'' <- convertTo IntT cond'
+      unless (isIntegralType (typeOf cond')) $
+        throwError $
+          "Condition expression must be integral, got " ++ show cond'
       thenStmt' <- tcStatement thenStmt
       maybeElseStmt' <- mapM tcStatement maybeElseStmt
-      return (IfStatement cond'' thenStmt' maybeElseStmt')
+      return (IfStatement cond' thenStmt' maybeElseStmt')
     tcStatement (LabelledStatement label stmt) = do
       stmt' <- tcStatement stmt
       return (LabelledStatement label stmt')
@@ -638,14 +641,18 @@ typecheck program = do
     tcStatement NullStatement = return NullStatement
     tcStatement (WhileStatement cond stmt) = do
       cond' <- tcExpression cond
-      cond'' <- convertTo IntT cond'
+      unless (isIntegralType (typeOf cond')) $
+        throwError $
+          "Condition expression must be integral, got " ++ show cond'
       stmt' <- tcStatement stmt
-      return (WhileStatement cond'' stmt')
+      return (WhileStatement cond' stmt')
     tcStatement (DoWhileStatement cond stmt) = do
       cond' <- tcExpression cond
-      cond'' <- convertTo IntT cond'
+      unless (isIntegralType (typeOf cond')) $
+        throwError $
+          "Condition expression must be integral, got " ++ show cond'
       stmt' <- tcStatement stmt
-      return (DoWhileStatement cond'' stmt')
+      return (DoWhileStatement cond' stmt')
     tcStatement (ForStatement maybeInit maybeCond maybeInc stmt) = do
       maybeInit' <- case maybeInit of
         Nothing -> return Nothing
@@ -655,11 +662,18 @@ typecheck program = do
         Just (ForInitDecl decl) -> do
           decl' <- tcDeclaration decl
           return (Just (ForInitDecl decl'))
-      maybeCond' <- mapM tcExpression maybeCond
-      maybeCond'' <- mapM (convertTo IntT) maybeCond'
+
+      maybeCond' <- case maybeCond of
+        Nothing -> return Nothing
+        Just cond -> do
+          cond' <- tcExpression cond
+          unless (isIntegralType (typeOf cond')) $
+            throwError $
+              "Condition expression must be integral, got " ++ show cond'
+          return (Just cond')
       maybeInc' <- mapM tcExpression maybeInc
       stmt' <- tcStatement stmt
-      return (ForStatement maybeInit' maybeCond'' maybeInc' stmt')
+      return (ForStatement maybeInit' maybeCond' maybeInc' stmt')
     tcStatement BreakStatement = return BreakStatement
     tcStatement ContinueStatement = return ContinueStatement
     tcStatement (SwitchStatement expr stmt) = do
@@ -697,7 +711,15 @@ typecheck program = do
       return (Binary IntT LogicOr left' right')
     tcExpression (Binary _ op left right) = do
       (commonT, left', right') <- makeCommonType left right
-      return (Binary commonT op left' right')
+      let t = case op of
+            Equal -> IntT
+            NotEqual -> IntT
+            Less -> IntT
+            Greater -> IntT
+            LessOrEqual -> IntT
+            GreaterOrEqual -> IntT
+            _ -> commonT
+      return (Binary t op left' right')
     tcExpression (Constant t c) = pure (Constant t c)
     tcExpression (Conditional _ cond trueExpr falseExpr) = do
       cond' <- tcExpression cond

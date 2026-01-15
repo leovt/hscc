@@ -4,10 +4,11 @@ module TAC
     TopLevel (..),
     Instruction (..),
     Value (..),
+    valueType,
   )
 where
 
-import CTypes (CType)
+import CTypes (CType (IntT))
 import Control.Monad.State
 import Data.Map (toList)
 import qualified Data.Map
@@ -23,6 +24,7 @@ import Validate
     SymbolAttributes (..),
     SymbolInfo (..),
     SymbolTable (..),
+    typeOf,
   )
 
 {- HLINT ignore "Use newtype instead of data" -}
@@ -32,7 +34,7 @@ data Program
 
 data TopLevel
   = Function String Bool [Value] [Instruction]
-  | StaticVariable String Bool Integer
+  | StaticVariable CType String Bool Integer
   deriving (Show)
 
 data Instruction
@@ -45,12 +47,18 @@ data Instruction
   | JumpIfNotZero String Value
   | Label String
   | FunctionCall String [Value] Value
+  | SignExtend Value Value
+  | Truncate Value Value
   deriving (Show)
 
 data Value
-  = Constant Integer
-  | Variable Bool String {- static duration, name -}
+  = Constant CType Integer
+  | Variable CType Bool String {- static duration, name -}
   deriving (Show)
+
+valueType :: Value -> CType
+valueType (Constant t _) = t
+valueType (Variable t _ _) = t
 
 data TransState = TransState
   { nextID :: Int,
@@ -86,10 +94,10 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       return (Program (catMaybes (staticVariables ++ functions)))
 
     translateSymbol :: (String, SymbolInfo) -> Maybe TopLevel
-    translateSymbol (name, SymbolInfo _type (StaticVariableAttr (Initial init) global)) =
-      Just $ StaticVariable name global init
-    translateSymbol (name, SymbolInfo _type (StaticVariableAttr Tentative global)) =
-      Just $ StaticVariable name global 0
+    translateSymbol (name, SymbolInfo varT (StaticVariableAttr (Initial init) global)) =
+      Just $ StaticVariable varT name global init
+    translateSymbol (name, SymbolInfo varT (StaticVariableAttr Tentative global)) =
+      Just $ StaticVariable varT name global 0
     translateSymbol _ = Nothing
 
     translateDeclaration :: P.Declaration CType -> TransM (Maybe TopLevel)
@@ -103,7 +111,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
             Nothing -> error $ "symbol not found " ++ name
             Just (SymbolInfo _type (FunctionAttr _ g)) -> g
             _ -> error $ "symbol a function symbol " ++ name
-      return $ Just (Function name global (map (Variable False . fromJust . snd) params) (instructions ++ [Return (Constant 0)]))
+      return $ Just (Function name global (map (\(paramT, name) -> Variable paramT False (fromJust name)) params) (instructions ++ [Return (Constant retT 0)]))
     translateFunction (P.FunctionDeclaration _ _ _ Nothing _ _) = return Nothing
 
     translateBlock :: P.Block CType -> TransM [Instruction]
@@ -249,9 +257,9 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
           case_jump (Default, _) = return []
           case_jump (Case n, jump_target) = do
             varid <- newId "tmp"
-            let destination = Variable False varid
+            let destination = Variable IntT False varid
             return
-              [ Binary P.Equal cond_value (Constant n) destination,
+              [ Binary P.Equal cond_value (Constant IntT n) destination,
                 JumpIfNotZero jump_target destination
               ]
       case_jumps_list <- mapM case_jump (Data.Map.toList switchLabelsMap)
@@ -287,50 +295,50 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       return (Label label : stmt_instructions)
 
     translateExpression :: P.Expression CType -> TransM ([Instruction], Value)
-    translateExpression (P.Constant _ c) = do
-      return ([], Constant c)
+    translateExpression (P.Constant t c) = do
+      return ([], Constant t c)
     translateExpression (P.Unary t P.PreIncrement var@(P.Variable _ _)) = do
       varid <- newId "tmp"
-      let destination = Variable False varid
+      let destination = Variable t False varid
       (_, var') <- translateExpression var
       return
-        ( [ Binary P.Add var' (Constant 1) destination,
+        ( [ Binary P.Add var' (Constant t 1) destination,
             Copy destination var'
           ],
           destination
         )
     translateExpression (P.Unary t P.PreDecrement var@(P.Variable _ _)) = do
       varid <- newId "tmp"
-      let destination = Variable False varid
+      let destination = Variable t False varid
       (_, var') <- translateExpression var
       return
-        ( [ Binary P.Subtract var' (Constant 1) destination,
+        ( [ Binary P.Subtract var' (Constant t 1) destination,
             Copy destination var'
           ],
           destination
         )
     translateExpression (P.Unary t P.PostIncrement var@(P.Variable _ _)) = do
       varid <- newId "tmp"
-      let destination = Variable False varid
+      let destination = Variable t False varid
       varid <- newId "tmp"
-      let newvalue = Variable False varid
+      let newvalue = Variable t False varid
       (_, var') <- translateExpression var
       return
         ( [ Copy var' destination,
-            Binary P.Add destination (Constant 1) newvalue,
+            Binary P.Add destination (Constant t 1) newvalue,
             Copy newvalue var'
           ],
           destination
         )
     translateExpression (P.Unary t P.PostDecrement var@(P.Variable _ _)) = do
       varid <- newId "tmp"
-      let destination = Variable False varid
+      let destination = Variable t False varid
       varid <- newId "tmp"
-      let newvalue = Variable False varid
+      let newvalue = Variable t False varid
       (_, var') <- translateExpression var
       return
         ( [ Copy var' destination,
-            Binary P.Subtract destination (Constant 1) newvalue,
+            Binary P.Subtract destination (Constant t 1) newvalue,
             Copy newvalue var'
           ],
           destination
@@ -342,7 +350,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
     translateExpression (P.Unary t op expression) = do
       (instructions, value) <- translateExpression expression
       varid <- newId "tmp"
-      let destination = Variable False varid
+      let destination = Variable t False varid
       return (instructions ++ [Unary op value destination], destination)
     translateExpression (P.Binary t P.LogicAnd left right) = do
       (l_instructions, left') <- translateExpression left
@@ -350,16 +358,16 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       varid <- newId "tmp"
       false_label <- newId "false.label"
       end_label <- newId "end.label"
-      let destination = Variable False varid
+      let destination = Variable t False varid
       let instructions =
             l_instructions
               ++ [JumpIfZero false_label left']
               ++ r_instructions
               ++ [ JumpIfZero false_label right',
-                   Copy (Constant 1) destination,
+                   Copy (Constant t 1) destination,
                    Jump end_label,
                    Label false_label,
-                   Copy (Constant 0) destination,
+                   Copy (Constant t 0) destination,
                    Label end_label
                  ]
       return (instructions, destination)
@@ -369,20 +377,20 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       varid <- newId "tmp"
       true_label <- newId "true.label"
       end_label <- newId "end.label"
-      let destination = Variable False varid
+      let destination = Variable t False varid
       let instructions =
             l_instructions
               ++ [JumpIfNotZero true_label left']
               ++ r_instructions
               ++ [ JumpIfNotZero true_label right',
-                   Copy (Constant 0) destination,
+                   Copy (Constant t 0) destination,
                    Jump end_label,
                    Label true_label,
-                   Copy (Constant 1) destination,
+                   Copy (Constant t 1) destination,
                    Label end_label
                  ]
       return (instructions, destination)
-    translateExpression (P.Binary t P.Assignment left@(P.Variable _ _) right) = do
+    translateExpression (P.Binary _ P.Assignment left@(P.Variable _ _) right) = do
       (l_instructions, left') <- translateExpression left
       (r_instructions, right') <- translateExpression right
       return (l_instructions ++ r_instructions ++ [Copy right' left'], right')
@@ -390,29 +398,29 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       (l_instructions, left') <- translateExpression left
       (r_instructions, right') <- translateExpression right
       varid <- newId "tmp"
-      let destination = Variable False varid
+      let destination = Variable t False varid
       return
         ( l_instructions
             ++ r_instructions
             ++ [Binary op left' right' destination, Copy destination left'],
           destination
         )
-    translateExpression (P.Binary t P.Assignment _ _) = error "assign to non-variable."
-    translateExpression (P.Binary t (P.CompoundAssignment _) _ _) = error "assign to non-variable."
+    translateExpression (P.Binary _ P.Assignment _ _) = error "assign to non-variable."
+    translateExpression (P.Binary _ (P.CompoundAssignment _) _ _) = error "assign to non-variable."
     translateExpression (P.Binary t op left right) = do
       (l_instructions, left') <- translateExpression left
       (r_instructions, right') <- translateExpression right
       varid <- newId "tmp"
-      let destination = Variable False varid
+      let destination = Variable t False varid
       return (l_instructions ++ r_instructions ++ [Binary op left' right' destination], destination)
     translateExpression (P.Variable t name) = do
       let symbol = case Data.Map.lookup name symtab of
             Nothing -> error $ "symbol not found: " ++ name
             Just info -> info
       case symbol of
-        SymbolInfo _ (StaticVariableAttr _ _) -> return ([], Variable True name)
+        SymbolInfo _ (StaticVariableAttr _ _) -> return ([], Variable t True name)
         SymbolInfo _ (FunctionAttr _ _) -> error "variable expected, function found."
-        SymbolInfo _ LocalVariableAttr -> return ([], Variable False name)
+        SymbolInfo _ LocalVariableAttr -> return ([], Variable t False name)
     translateExpression (P.Conditional t condExpr thenExpr elseExpr) = do
       (cond_instructions, cond_value) <- translateExpression condExpr
       else_label <- newId "cond.else"
@@ -420,7 +428,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       (then_instructions, then_value) <- translateExpression thenExpr
       (else_instructions, else_value) <- translateExpression elseExpr
       varid <- newId "tmp.cond"
-      let destination = Variable False varid
+      let destination = Variable t False varid
       let instructions =
             cond_instructions
               ++ [JumpIfZero else_label cond_value]
@@ -433,6 +441,16 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       pairs <- mapM translateExpression args
       let (instructions, args') = unzip pairs
       varid <- newId "tmp.cond"
-      let destination = Variable False varid
+      let destination = Variable t False varid
       return (concat instructions ++ [FunctionCall name args' destination], destination)
-    translateExpression (P.Cast _ _) = error "Casts not implemented in TAC translation."
+    translateExpression (P.Cast t expr)
+      | typeOf expr == t = translateExpression expr
+      | otherwise = do
+          (instructions, value) <- translateExpression expr
+          varid <- newId "tmp.cast"
+          let destination = Variable t False varid
+          let cast_instruction = case (typeOf expr, t) of
+                (IntT, _) -> SignExtend value destination
+                (_, IntT) -> Truncate value destination
+                _ -> error "Unsupported cast."
+          return (instructions ++ [cast_instruction], destination)

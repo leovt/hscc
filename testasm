@@ -1,4 +1,5 @@
 cabal build
 ./hscc $1.c
-cat $1.c
-cat $1.s
+nl -ba $1.c
+echo ""
+nl -ba $1.s

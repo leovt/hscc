@@ -7,10 +7,13 @@ module AsmAst
   )
 where
 
+import CTypes (CType (..))
 import Control.Monad.State
+import Data.Bits (Bits (shiftL))
 import qualified Data.Map
 import Parser (BinaryOperator (..), UnaryOperator (..))
 import qualified Parser as P
+import TAC (valueType)
 import qualified TAC as T
 
 {- HLINT ignore "Use newtype instead of data" -}
@@ -20,12 +23,13 @@ data Program
 
 data TopLevel
   = Function String Bool [Instruction]
-  | StaticVariable String Bool Integer
+  | StaticVariable AsmType String Bool Integer
   deriving (Show)
 
 data Instruction
-  = TwoOp TwoOperandInstruction Operand Operand
-  | OneOp OneOperandInstruction Operand
+  = TwoOp TwoOperandInstruction AsmType Operand Operand
+  | OneOp OneOperandInstruction AsmType Operand
+  | MovSX Operand Operand
   | AllocateStack Int
   | DeallocateStack Int
   | Jmp String
@@ -35,7 +39,7 @@ data Instruction
   | Push Operand
   | Call String
   | Ret
-  | Cdq
+  | Cdq AsmType
   deriving (Show)
 
 data OneOperandInstruction
@@ -61,14 +65,14 @@ data Condition = E | NE | G | GE | L | LE
   deriving (Show)
 
 data MemoryOperand
-  = Stack Int
+  = Stack Int String
   | Data String
   deriving (Show, Eq, Ord)
 
 data Operand
   = Imm Integer
   | Register Reg
-  | Pseudo String
+  | Pseudo AsmType String
   | Memory MemoryOperand
   deriving (Show, Eq, Ord)
 
@@ -96,8 +100,21 @@ data RegSize
   | Reg4
   | Reg8
 
+data AsmType
+  = Longword
+  | Quadword
+  deriving (Show, Eq, Ord)
+
+asmType :: CType -> AsmType
+asmType IntT = Longword
+asmType LongIntT = Quadword
+asmType _ = error "Unsupported CType for AsmType."
+
+asmValueType :: T.Value -> AsmType
+asmValueType = asmType . valueType
+
 translateTACtoASM :: T.Program -> Program
-translateTACtoASM = fixInstructions . replacePseudo . translateProgram
+translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateProgram
   where
     translateProgram :: T.Program -> Program
     translateProgram (T.Program functions) = Program (map translateFunction functions)
@@ -111,73 +128,72 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
             ++ body_instructions
             ++ cleanupStack
 
-        params' = map translateValue params
-
         argRegisters :: [Reg]
         argRegisters = [DI, SI, DX, CX, R8, R9]
-        (registerArgs, stackArgs) = splitAt (length argRegisters) params'
+        (registerArgs, stackArgs) = splitAt (length argRegisters) params
         copyRegisterParameters = zipWith movarg registerArgs argRegisters
         copyStackParameters = zipWith movstk stackArgs [16, 24 ..]
 
-        movarg :: Operand -> Reg -> Instruction
-        movarg arg reg = TwoOp Mov (Register reg) arg
+        movarg :: T.Value -> Reg -> Instruction
+        movarg arg reg = TwoOp Mov (asmValueType arg) (Register reg) (translateValue arg)
 
-        movstk :: Operand -> Int -> Instruction
-        movstk arg offset = TwoOp Mov (Memory $ Stack offset) arg
+        movstk :: T.Value -> Int -> Instruction
+        movstk arg@(T.Variable _ _ name) offset = TwoOp Mov (asmValueType arg) (Memory $ Stack offset name) (translateValue arg)
+        movstk _ _ = error "Parameters must be variables."
 
         body_instructions = concatMap translateInstruction stmts
         cleanupStack = []
-    translateFunction (T.StaticVariable name global init) = StaticVariable name global init
+    translateFunction (T.StaticVariable t name global init) = StaticVariable (asmType t) name global init
 
     translateInstruction :: T.Instruction -> [Instruction]
     translateInstruction (T.Return value) =
-      [ TwoOp Mov (translateValue value) (Register AX),
+      [ TwoOp Mov (asmValueType value) (translateValue value) (Register AX),
         Ret
       ]
     translateInstruction (T.Unary LogicNot src dst) =
-      [ TwoOp Cmp (Imm 0) (translateValue src),
-        TwoOp Mov (Imm 0) (translateValue dst),
+      [ TwoOp Cmp (asmValueType src) (Imm 0) (translateValue src),
+        TwoOp Mov (asmType IntT) (Imm 0) (translateValue dst),
         SetCC E (translateValue dst)
       ]
     translateInstruction (T.Unary op src dst) =
-      [ TwoOp Mov (translateValue src) (translateValue dst),
-        OneOp (translateUnary op) (translateValue dst)
+      [ TwoOp Mov (asmValueType src) (translateValue src) (translateValue dst),
+        OneOp (translateUnary op) (asmValueType src) (translateValue dst)
       ]
     translateInstruction (T.Binary Divide left right dst) =
-      [ TwoOp Mov (translateValue left) (Register AX),
-        Cdq,
-        OneOp Div (translateValue right),
-        TwoOp Mov (Register AX) (translateValue dst)
+      [ TwoOp Mov (asmValueType left) (translateValue left) (Register AX),
+        Cdq (asmValueType left),
+        OneOp Div (asmValueType right) (translateValue right),
+        TwoOp Mov (asmValueType left) (Register AX) (translateValue dst)
       ]
     translateInstruction (T.Binary Remainder left right dst) =
-      [ TwoOp Mov (translateValue left) (Register AX),
-        Cdq,
-        OneOp Div (translateValue right),
-        TwoOp Mov (Register DX) (translateValue dst)
+      [ TwoOp Mov (asmValueType left) (translateValue left) (Register AX),
+        Cdq (asmValueType left),
+        OneOp Div (asmValueType right) (translateValue right),
+        TwoOp Mov (asmValueType left) (Register DX) (translateValue dst)
       ]
     translateInstruction (T.Binary op left right dst) =
       case translateBinary op of
         Arithmetic instruction ->
-          [ TwoOp Mov (translateValue left) (translateValue dst),
-            TwoOp instruction (translateValue right) (translateValue dst)
+          [ TwoOp Mov (asmValueType dst) (translateValue left) (translateValue dst),
+            TwoOp instruction (asmValueType dst) (translateValue right) (translateValue dst)
           ]
         Relational condition ->
           let dest = translateValue dst
-           in [ TwoOp Cmp (translateValue right) (translateValue left),
-                TwoOp Mov (Imm 0) dest,
+           in [ TwoOp Cmp (asmValueType right) (translateValue right) (translateValue left),
+                TwoOp Mov (asmType IntT) (Imm 0) dest,
                 SetCC condition dest
               ]
     translateInstruction (T.Copy src dst) =
-      [ TwoOp Mov (translateValue src) (translateValue dst)
+      [ TwoOp Mov (asmValueType src) (translateValue src) (translateValue dst)
       ]
     translateInstruction (T.Jump label) = [Jmp label]
     translateInstruction (T.Label label) = [Label label]
     translateInstruction (T.JumpIfZero label value) =
-      [ TwoOp Cmp (Imm 0) (translateValue value),
+      [ TwoOp Cmp (asmValueType value) (Imm 0) (translateValue value),
         JmpCC E label
       ]
     translateInstruction (T.JumpIfNotZero label value) =
-      [ TwoOp Cmp (Imm 0) (translateValue value),
+      [ TwoOp Cmp (asmValueType value) (Imm 0) (translateValue value),
         JmpCC NE label
       ]
     translateInstruction (T.FunctionCall name args value) =
@@ -197,16 +213,19 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
         allocateStackSpace = if stackPadding == 0 then [] else [AllocateStack stackPadding]
         deallocateStackSpace = if cleanupSize == 0 then [] else [DeallocateStack cleanupSize]
         passRegisterArguments = zipWith movarg registerArgs argRegisters
-        passStackArguments = concatMap (movstk . translateValue) (reverse stackArgs)
-        saveReturnValue = [TwoOp Mov (Register AX) (translateValue value)]
+        passStackArguments = concatMap movstk (reverse stackArgs)
+        saveReturnValue = [TwoOp Mov (asmValueType value) (Register AX) (translateValue value)]
 
         movarg :: T.Value -> Reg -> Instruction
-        movarg val reg = TwoOp Mov (translateValue val) (Register reg)
+        movarg val reg = TwoOp Mov (asmValueType val) (translateValue val) (Register reg)
 
-        movstk :: Operand -> [Instruction]
-        movstk op@(Imm _) = [Push op]
-        movstk op@(Register _) = [Push op]
-        movstk op = [TwoOp Mov op (Register AX), Push (Register AX)]
+        movstk :: T.Value -> [Instruction]
+        movstk val = case translateValue val of
+          op@(Imm _) -> [Push op]
+          op@(Register _) -> [Push op]
+          op -> [TwoOp Mov (asmValueType val) op (Register AX), Push (Register AX)]
+    translateInstruction (T.SignExtend src dst) = [MovSX (translateValue src) (translateValue dst)]
+    translateInstruction (T.Truncate src dst) = [TwoOp Mov Longword (translateValue src) (translateValue dst)]
 
     translateUnary :: UnaryOperator -> OneOperandInstruction
     translateUnary Complement = Not
@@ -240,9 +259,9 @@ translateTACtoASM = fixInstructions . replacePseudo . translateProgram
     translateBinary (CompoundAssignment _) = error "CompoundAssignment does not translate to a two operand form."
 
     translateValue :: T.Value -> Operand
-    translateValue (T.Constant c) = Imm c
-    translateValue (T.Variable False name) = Pseudo name
-    translateValue (T.Variable True name) = Memory $ Data name
+    translateValue (T.Constant _ c) = Imm c
+    translateValue (T.Variable t False name) = Pseudo (asmType t) name
+    translateValue (T.Variable _ True name) = Memory $ Data name
 
 data TransState = TransState
   { stackSize :: Int,
@@ -255,32 +274,39 @@ replacePseudo :: Program -> Program
 replacePseudo program = evalState (replacePseudoProg program) (TransState {stackSize = 0, pseudoMap = Data.Map.empty})
   where
     replacePseudoOp :: Operand -> TransM Operand
-    replacePseudoOp (Pseudo name) = do
+    replacePseudoOp operand@(Pseudo t name) = do
       state <- get
-      case Data.Map.lookup (Pseudo name) (pseudoMap state) of
+      case Data.Map.lookup operand (pseudoMap state) of
         Just existing -> return existing
         Nothing -> do
           -- Compute a new Stack operand, e.g., Stack n where n = current map size
-          let n = stackSize state + 4
-          let new = Memory $ Stack (-n)
-          put TransState {stackSize = n, pseudoMap = Data.Map.insert (Pseudo name) new (pseudoMap state)}
+          let sz = case t of
+                Longword -> 4
+                Quadword -> 8
+              n = (stackSize state + sz + sz - 1) `div` sz * sz -- align to sz
+          let new = Memory $ Stack (-n) name
+          put TransState {stackSize = n, pseudoMap = Data.Map.insert operand new (pseudoMap state)}
           return new
     replacePseudoOp op = return op
 
     replacePseudoIns :: Instruction -> TransM Instruction
-    replacePseudoIns (TwoOp op src dst) = do
+    replacePseudoIns (TwoOp op t src dst) = do
       src' <- replacePseudoOp src
       dst' <- replacePseudoOp dst
-      return (TwoOp op src' dst')
-    replacePseudoIns (OneOp op dst) = do
+      return (TwoOp op t src' dst')
+    replacePseudoIns (OneOp op t dst) = do
       dst' <- replacePseudoOp dst
-      return (OneOp op dst')
+      return (OneOp op t dst')
     replacePseudoIns (SetCC condition dst) = do
       dst' <- replacePseudoOp dst
       return (SetCC condition dst')
     replacePseudoIns (Push src) = do
       src' <- replacePseudoOp src
       return (Push src')
+    replacePseudoIns (MovSX src dst) = do
+      src' <- replacePseudoOp src
+      dst' <- replacePseudoOp dst
+      return (MovSX src' dst')
     replacePseudoIns any = return any
 
     replacePseudoFun :: TopLevel -> TransM TopLevel
@@ -305,34 +331,74 @@ fixInstructions (Program fun) = Program (map fixInstructionsFun fun)
     fixInstructionsFun other = other
 
     fixInstr :: Instruction -> [Instruction]
-    fixInstr (TwoOp Mul src dst@(Memory _)) =
-      [ TwoOp Mov dst (Register R11),
-        TwoOp Mul src (Register R11),
-        TwoOp Mov (Register R11) dst
+    fixInstr (TwoOp Mul t src dst@(Memory _)) =
+      [ TwoOp Mov t dst (Register R11),
+        TwoOp Mul t src (Register R11),
+        TwoOp Mov t (Register R11) dst
       ]
-    fixInstr (TwoOp ShLeft (Imm n) dst) = [TwoOp ShLeft (Imm n) dst]
-    fixInstr (TwoOp ShLeft src dst) =
-      [ TwoOp Mov src (Register CX),
-        TwoOp ShLeft (Register CX) dst
+    fixInstr (TwoOp ShLeft t (Imm n) dst) = [TwoOp ShLeft t (Imm n) dst]
+    fixInstr (TwoOp ShLeft t src dst) =
+      [ TwoOp Mov t src (Register CX),
+        TwoOp ShLeft t (Register CX) dst
       ]
-    fixInstr (TwoOp ShRight (Imm n) dst) = [TwoOp ShRight (Imm n) dst]
-    fixInstr (TwoOp ShRight src dst) =
-      [ TwoOp Mov src (Register CX),
-        TwoOp ShRight (Register CX) dst
+    fixInstr (TwoOp ShRight t (Imm n) dst) = [TwoOp ShRight t (Imm n) dst]
+    fixInstr (TwoOp ShRight t src dst) =
+      [ TwoOp Mov t src (Register CX),
+        TwoOp ShRight t (Register CX) dst
       ]
-    fixInstr (TwoOp Cmp src (Imm n)) =
-      [ TwoOp Mov (Imm n) (Register R11),
-        TwoOp Cmp src (Register R11)
+    fixInstr (TwoOp Cmp t src (Imm n)) =
+      [ TwoOp Mov t (Imm n) (Register R11),
+        TwoOp Cmp t src (Register R11)
       ]
-    fixInstr (TwoOp op src@(Memory _) dst@(Memory _)) =
-      [ TwoOp Mov src (Register R10),
-        TwoOp op (Register R10) dst
+    fixInstr (TwoOp op t src@(Memory _) dst@(Memory _)) =
+      [ TwoOp Mov t src (Register R10),
+        TwoOp op t (Register R10) dst
       ]
-    fixInstr (OneOp Div (Imm n)) =
-      [ TwoOp Mov (Imm n) (Register R10),
-        OneOp Div (Register R10)
+    fixInstr (OneOp Div t (Imm n)) =
+      [ TwoOp Mov t (Imm n) (Register R10),
+        OneOp Div t (Register R10)
+      ]
+    fixInstr (MovSX src@(Imm _) dst@(Memory _)) =
+      [ TwoOp Mov Longword src (Register R10),
+        MovSX (Register R10) (Register R11),
+        TwoOp Mov Quadword (Register R11) dst
+      ]
+    fixInstr (MovSX src dst@(Memory _)) =
+      [ MovSX src (Register R11),
+        TwoOp Mov Quadword (Register R11) dst
+      ]
+    fixInstr (MovSX src@(Imm _) dst) =
+      [ TwoOp Mov Longword src (Register R10),
+        MovSX (Register R10) dst
       ]
     fixInstr ins = [ins]
+
+fixImmediates :: Program -> Program
+fixImmediates (Program p) = Program (map fixImmediatesTop p)
+  where
+    fixImmediatesTop :: TopLevel -> TopLevel
+    fixImmediatesTop (Function name global instructions) = Function name global (concatMap fixInstr instructions)
+    fixImmediatesTop other = other
+
+    fixInstr :: Instruction -> [Instruction]
+    fixInstr ins@(TwoOp Mov Quadword _ (Register _)) = [ins]
+    fixInstr ins@(TwoOp op Quadword src@(Imm n) dst)
+      | fitsImm32Signed n = [ins]
+      | otherwise =
+          [ TwoOp Mov Quadword src (Register R10),
+            TwoOp op Quadword (Register R10) dst
+          ]
+    fixInstr ins@(Push src@(Imm n))
+      | fitsImm32Signed n = [ins]
+      | otherwise =
+          [ TwoOp Mov Quadword src (Register R10),
+            Push (Register R10)
+          ]
+    fixInstr ins = [ins]
+
+    fitsImm32Signed :: Integer -> Bool
+    fitsImm32Signed n =
+      n >= -(1 `shiftL` 31) && n <= (1 `shiftL` 31) - 1
 
 emitProgram :: Program -> [String]
 emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-stack,\"\",@progbits"]
@@ -341,42 +407,61 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     emitTopLevel (Function name global instructions) =
       let asmglobal = if global then [".globl " ++ name] else []
        in asmglobal ++ [name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ map emitInstruction instructions
-    emitTopLevel (StaticVariable name global init) =
+    emitTopLevel (StaticVariable t name global init) =
       let asmglobal = if global then [".globl " ++ name] else []
-       in asmglobal ++ [".data", ".align 4", name ++ ":", "    .long " ++ show init, ".text"]
+          alignment = case t of
+            Longword -> ".align 4"
+            Quadword -> ".align 8"
+          dataDirective = case t of
+            Longword -> "    .long " ++ show (reduceImm Reg4 init)
+            Quadword -> "    .quad " ++ show (reduceImm Reg8 init)
+       in asmglobal ++ [".data", alignment, name ++ ":", dataDirective, ".text"]
 
     emitInstruction :: Instruction -> String
-    emitInstruction (TwoOp ShLeft src dst) = "    " ++ twoOp ShLeft ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand Reg4 dst
-    emitInstruction (TwoOp ShRight src dst) = "    " ++ twoOp ShRight ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand Reg4 dst
-    emitInstruction (TwoOp op src dst) = "    " ++ twoOp op ++ " " ++ emitOperand Reg4 src ++ ", " ++ emitOperand Reg4 dst
-    emitInstruction (OneOp op src) = "    " ++ oneOp op ++ " " ++ emitOperand Reg4 src
+    emitInstruction ins@(TwoOp ShLeft t src dst) = "    " ++ twoOp ShLeft t ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand (regSize t) dst ++ comment ins
+    emitInstruction ins@(TwoOp ShRight t src dst) = "    " ++ twoOp ShRight t ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand (regSize t) dst ++ comment ins
+    emitInstruction ins@(TwoOp op t src dst) = "    " ++ twoOp op t ++ " " ++ emitOperand (regSize t) src ++ ", " ++ emitOperand (regSize t) dst ++ comment ins
+    emitInstruction (OneOp op t src) = "    " ++ oneOp op t ++ " " ++ emitOperand (regSize t) src
     emitInstruction (AllocateStack n) = "    subq $" ++ show n ++ ", %rsp"
     emitInstruction (DeallocateStack n) = "    addq $" ++ show n ++ ", %rsp"
     emitInstruction Ret = "    movq %rbp, %rsp\n    popq %rbp\n    ret"
-    emitInstruction Cdq = "    cdq"
+    emitInstruction (Cdq Longword) = "    cdq"
+    emitInstruction (Cdq Quadword) = "    cqo"
     emitInstruction (Jmp label) = "    jmp " ++ label
     emitInstruction (Label label) = label ++ ":"
     emitInstruction (JmpCC condition label) = "    j" ++ cond condition ++ " " ++ label
     emitInstruction (SetCC condition dst) = "    set" ++ cond condition ++ " " ++ emitOperand Reg4 dst
     emitInstruction (Push src) = "    pushq " ++ emitOperand Reg8 src
     emitInstruction (Call name) = "    call " ++ name
+    emitInstruction (MovSX src dst) = "    movslq " ++ emitOperand Reg4 src ++ ", " ++ emitOperand Reg8 dst
 
-    twoOp :: TwoOperandInstruction -> String
-    twoOp Mov = "movl"
-    twoOp AsmAst.Add = "addl"
-    twoOp Sub = "subl"
-    twoOp Mul = "imull"
-    twoOp And = "andl"
-    twoOp Or = "orl"
-    twoOp Xor = "xorl"
-    twoOp ShLeft = "sall"
-    twoOp ShRight = "sarl"
-    twoOp Cmp = "cmpl"
+    srcComment :: Instruction -> String
+    srcComment (TwoOp _ _ src@(Memory (Stack _ name)) _) = " # " ++ emitOperand Reg8 src ++ " = " ++ name
+    srcComment _ = ""
 
-    oneOp :: OneOperandInstruction -> String
-    oneOp Div = "idivl"
-    oneOp Neg = "negl"
-    oneOp Not = "notl"
+    dstComment :: Instruction -> String
+    dstComment (TwoOp _ _ _ dst@(Memory (Stack _ name))) = " # " ++ emitOperand Reg8 dst ++ " = " ++ name
+    dstComment _ = ""
+
+    comment :: Instruction -> String
+    comment ins = srcComment ins ++ dstComment ins
+
+    twoOp :: TwoOperandInstruction -> AsmType -> String
+    twoOp Mov t = "mov" ++ typeSuffix t
+    twoOp AsmAst.Add t = "add" ++ typeSuffix t
+    twoOp Sub t = "sub" ++ typeSuffix t
+    twoOp Mul t = "imul" ++ typeSuffix t
+    twoOp And t = "and" ++ typeSuffix t
+    twoOp Or t = "or" ++ typeSuffix t
+    twoOp Xor t = "xor" ++ typeSuffix t
+    twoOp ShLeft t = "sal" ++ typeSuffix t
+    twoOp ShRight t = "sar" ++ typeSuffix t
+    twoOp Cmp t = "cmp" ++ typeSuffix t
+
+    oneOp :: OneOperandInstruction -> AsmType -> String
+    oneOp Div t = "idiv" ++ typeSuffix t
+    oneOp Neg t = "neg" ++ typeSuffix t
+    oneOp Not t = "not" ++ typeSuffix t
 
     cond :: Condition -> String
     cond E = "e"
@@ -386,11 +471,19 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     cond L = "l"
     cond LE = "le"
 
+    typeSuffix :: AsmType -> String
+    typeSuffix Longword = "l"
+    typeSuffix Quadword = "q"
+
+    regSize :: AsmType -> RegSize
+    regSize Longword = Reg4
+    regSize Quadword = Reg8
+
     emitOperand :: RegSize -> Operand -> String
-    emitOperand _ (Imm n) = "$" ++ show n
-    emitOperand _ (Memory (Stack n)) = show n ++ "(%rbp)"
+    emitOperand sz (Imm n) = "$" ++ show (reduceImm sz n)
+    emitOperand _ (Memory (Stack n _)) = show n ++ "(%rbp)"
     emitOperand _ (Memory (Data name)) = name ++ "(%rip)"
-    emitOperand _ (Pseudo name) = error $ "emitOperand: unexpected Pseudo operand: " ++ name
+    emitOperand _ (Pseudo _ name) = error $ "emitOperand: unexpected Pseudo operand: " ++ name
     emitOperand Reg1 (Register AX) = "%al"
     emitOperand Reg1 (Register CX) = "%cl"
     emitOperand Reg1 (Register DX) = "%dl"
@@ -427,3 +520,8 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     emitOperand Reg8 (Register R9) = "%r9"
     emitOperand Reg8 (Register R10) = "%r10"
     emitOperand Reg8 (Register R11) = "%r11"
+
+    reduceImm :: RegSize -> Integer -> Integer
+    reduceImm Reg1 n = n `mod` 256
+    reduceImm Reg4 n = (n + (1 `shiftL` 31)) `mod` (1 `shiftL` 32) - (1 `shiftL` 31)
+    reduceImm Reg8 n = n
