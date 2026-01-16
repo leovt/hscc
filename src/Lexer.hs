@@ -10,13 +10,15 @@ where
 
 import Data.List (mapAccumL)
 
-data IntSuffix = NoSuffix | LSuffix deriving (Show, Eq)
+data IntSuffix = NoSuffix | LSuffix | USuffix | LUSuffix deriving (Show, Eq)
 
 data Token
   = TokInt Integer IntSuffix
   | TokIdent String
   | TokKeyInt
   | TokKeyLong
+  | TokKeySigned
+  | TokKeyUnsigned
   | TokKeyVoid
   | TokKeyReturn
   | TokKeyGoto
@@ -144,6 +146,8 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
 
     map_keyword "int" = TokKeyInt
     map_keyword "long" = TokKeyLong
+    map_keyword "signed" = TokKeySigned
+    map_keyword "unsigned" = TokKeyUnsigned
     map_keyword "void" = TokKeyVoid
     map_keyword "return" = TokKeyReturn
     map_keyword "goto" = TokKeyGoto
@@ -166,7 +170,7 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
     whitespace = " \t\n\r\f\v\0"
     id_start = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
     digits = "0123456789"
-    int_suffix = "lL"
+    int_suffix = "lLuU"
     id_continue = id_start ++ digits
     punctuation = "-~+*/%&|^<>!=?:,"
 
@@ -211,5 +215,15 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
     intSuffix :: String -> Either String IntSuffix
     intSuffix "l" = Right LSuffix
     intSuffix "L" = Right LSuffix
+    intSuffix "u" = Right USuffix
+    intSuffix "U" = Right USuffix
+    intSuffix "lu" = Right LUSuffix
+    intSuffix "lU" = Right LUSuffix
+    intSuffix "Lu" = Right LUSuffix
+    intSuffix "LU" = Right LUSuffix
+    intSuffix "ul" = Right LUSuffix
+    intSuffix "uL" = Right LUSuffix
+    intSuffix "Ul" = Right LUSuffix
+    intSuffix "UL" = Right LUSuffix
     intSuffix "" = Right NoSuffix
     intSuffix s = Left ("Invalid integer suffix: " ++ s)

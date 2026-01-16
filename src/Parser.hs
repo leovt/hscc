@@ -201,6 +201,8 @@ isSpecifier token = isTypeSpecifier token
 isTypeSpecifier :: Token -> Bool
 isTypeSpecifier TokKeyInt = True
 isTypeSpecifier TokKeyLong = True
+isTypeSpecifier TokKeySigned = True
+isTypeSpecifier TokKeyUnsigned = True
 isTypeSpecifier _ = False
 
 associativity :: BinaryOperator -> Int
@@ -416,11 +418,11 @@ maybeParseDeclaration _ _ = return Nothing
 decodeSpecifiers :: [Token] -> Either String (CType, StorageClass)
 decodeSpecifiers specifiers = do
   let go [] (sc, tp) = return (sc, tp)
-      go (TokKeyInt : toks) (sc, tp) = go toks (sc, TokKeyInt : tp)
-      go (TokKeyLong : toks) (sc, tp) = go toks (sc, TokKeyLong : tp)
       go (TokKeyStatic : toks) (sc, tp) = go toks (TokKeyStatic : sc, tp)
       go (TokKeyExtern : toks) (sc, tp) = go toks (TokKeyExtern : sc, tp)
-      go (tok : _) _ = Left $ "Internal Error: not a specifier " ++ show tok
+      go (tok : toks) (sc, tp)
+        | isTypeSpecifier tok = go toks (sc, tok : tp)
+        | otherwise = Left $ "Internal Error: not a specifier " ++ show tok
   (storage, types) <- go specifiers ([], [])
   storage' <- case storage of
     [] -> return StorageNone
@@ -431,11 +433,21 @@ decodeSpecifiers specifiers = do
   return (ctype, storage')
 
 parseType :: [Token] -> Either String CType
-parseType [TokKeyInt] = return IntT
-parseType [TokKeyLong] = return LongIntT
-parseType [TokKeyLong, TokKeyInt] = return LongIntT
-parseType [TokKeyInt, TokKeyLong] = return LongIntT
-parseType tokens = Left $ "Illegal type specifiers " ++ show tokens
+parseType [] = Left "Missing type specifiers."
+parseType tokens = do
+  let go [] (signed, unsigned, long, int) = return (signed, unsigned, long, int)
+      go (TokKeySigned : toks) (False, False, l, i) = go toks (True, False, l, i)
+      go (TokKeyUnsigned : toks) (False, False, l, i) = go toks (False, True, l, i)
+      go (TokKeyLong : toks) (s, u, False, i) = go toks (s, u, True, i)
+      go (TokKeyInt : toks) (s, u, l, False) = go toks (s, u, l, True)
+      go _ _ = Left $ "Illegal type specifiers: " ++ show tokens
+
+  (signed, unsigned, long, int) <- go tokens (False, False, False, False)
+  case (signed, unsigned, long, int) of
+    (_, True, True, _) -> return ULongIntT
+    (_, True, False, _) -> return UIntT
+    (_, False, True, _) -> return LongIntT
+    (_, False, False, _) -> return IntT
 
 parseDeclaration :: ScopeLevel -> [Token] -> Either String (Declaration (), [Token])
 parseDeclaration scope tokens = do
@@ -560,4 +572,11 @@ parseIntLiteral n NoSuffix
   | otherwise = Left "Integer literal out of range"
 parseIntLiteral n LSuffix
   | n < 1 `shiftL` 63 = Right (Constant LongIntT n)
+  | otherwise = Left "Integer literal out of range"
+parseIntLiteral n USuffix
+  | n < 1 `shiftL` 32 = Right (Constant UIntT n)
+  | n < 1 `shiftL` 64 = Right (Constant ULongIntT n)
+  | otherwise = Left "Integer literal out of range"
+parseIntLiteral n LUSuffix
+  | n < 1 `shiftL` 64 = Right (Constant ULongIntT n)
   | otherwise = Left "Integer literal out of range"
