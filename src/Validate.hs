@@ -9,7 +9,7 @@ module Validate
   )
 where
 
-import CTypes (CType (..), commonType, isIntegralType)
+import CTypes (CType (..), commonType, isIntegralType, truncateIntegral)
 import Control.Monad (unless, when, zipWithM)
 import Control.Monad.Except
 import Control.Monad.State
@@ -55,7 +55,6 @@ data ResolutionState = ResolutionState
   { nextID :: Int,
     names :: [Data.Map.Map String (String, Linkage)],
     labels :: Maybe (Data.Map.Map String LabelState),
-    switchLabels :: [Data.Map.Map SwitchLabels ()],
     allowBreak :: Bool,
     allowContinue :: Bool
   }
@@ -64,7 +63,9 @@ data ResolutionState = ResolutionState
 {- HLINT ignore "Use newtype instead of data" -}
 data TypecheckState = TypecheckState
   { symbolTable :: SymbolTable,
-    maybeReturnType :: Maybe CType
+    maybeReturnType :: Maybe CType,
+    switchLabels :: [Data.Map.Map SwitchLabels ()],
+    maybeSwitchExprType :: Maybe CType
   }
 
 type ResM a = ExceptT String (State ResolutionState) a -- the resolution monad encapsulating the resolution state
@@ -126,8 +127,7 @@ resolve program =
           names = [Data.Map.empty],
           labels = Nothing,
           allowBreak = False,
-          allowContinue = False,
-          switchLabels = []
+          allowContinue = False
         }
 
     uniqueID :: ResM Int
@@ -329,11 +329,9 @@ resolve program =
       label' <- resolveLabelDecl label
       return (LabelledStatement (Label label') stmt')
     resolveStatement (LabelledStatement (CaseLabel n) stmt) = do
-      checkSwitchLabels (Case n)
       stmt' <- resolveStatement stmt
       return (LabelledStatement (CaseLabel n) stmt')
     resolveStatement (LabelledStatement DefaultLabel stmt) = do
-      checkSwitchLabels Default
       stmt' <- resolveStatement stmt
       return (LabelledStatement DefaultLabel stmt')
     resolveStatement (GotoStatement label) = do
@@ -380,29 +378,13 @@ resolve program =
       unless (allowContinue state) $ throwError "continue outside of loop"
       return ContinueStatement
     resolveStatement (SwitchStatement expr stmt) = do
-      {-      let isCompoundStatement (CompoundStatement _) = True
-                isCompoundStatement _ = False
-            unless (isCompoundStatement stmt) $
-              throwError "switch statement body must be a compound statement" -}
       expr' <- resolveExpression expr
       state_before <- get
-      put state_before {switchLabels = Data.Map.empty : switchLabels state_before, allowBreak = True}
+      put state_before {allowBreak = True}
       stmt' <- resolveStatement stmt
       state_after <- get
-      put state_after {switchLabels = switchLabels state_before, allowBreak = allowBreak state_before}
+      put state_after {allowBreak = allowBreak state_before}
       return (SwitchStatement expr' stmt')
-
-    checkSwitchLabels :: SwitchLabels -> ResM ()
-    checkSwitchLabels label = do
-      state <- get
-      case switchLabels state of
-        [] -> throwError $ "not in a switch context: " ++ show label
-        (current : rest) -> case Data.Map.lookup label current of
-          Just _ -> throwError $ "duplicate label " ++ show label ++ " in switch context"
-          Nothing -> do
-            let current' = Data.Map.insert label () current
-            put state {switchLabels = current' : rest}
-            return ()
 
     withLoopContext :: ResM a -> ResM a
     withLoopContext action = do
@@ -473,7 +455,9 @@ typecheck program = do
     initState =
       TypecheckState
         { symbolTable = SymbolTable Data.Map.empty,
-          maybeReturnType = Nothing
+          maybeReturnType = Nothing,
+          switchLabels = [],
+          maybeSwitchExprType = Nothing
         }
 
     tcProgram :: UntypedProgram -> TypM TypedProgram
@@ -631,6 +615,17 @@ typecheck program = do
       thenStmt' <- tcStatement thenStmt
       maybeElseStmt' <- mapM tcStatement maybeElseStmt
       return (IfStatement cond' thenStmt' maybeElseStmt')
+    tcStatement (LabelledStatement (CaseLabel n) stmt) = do
+      label <- checkSwitchLabels (Case n)
+      n' <- case label of
+        Case n' -> return n'
+        _ -> throwError "Internal Error: checkSwitchLabels returned unexpected label"
+      stmt' <- tcStatement stmt
+      return (LabelledStatement (CaseLabel n') stmt')
+    tcStatement (LabelledStatement DefaultLabel stmt) = do
+      _ <- checkSwitchLabels Default
+      stmt' <- tcStatement stmt
+      return (LabelledStatement DefaultLabel stmt')
     tcStatement (LabelledStatement label stmt) = do
       stmt' <- tcStatement stmt
       return (LabelledStatement label stmt')
@@ -681,8 +676,33 @@ typecheck program = do
       unless (isIntegralType (typeOf expr')) $
         throwError $
           "Switch expression must be integral, got " ++ show expr'
+      state_before <- get
+      put state_before {switchLabels = Data.Map.empty : switchLabels state_before, maybeSwitchExprType = Just (typeOf expr')}
       stmt' <- tcStatement stmt
+      state_after <- get
+      put state_after {switchLabels = switchLabels state_before, maybeSwitchExprType = maybeSwitchExprType state_before}
       return (SwitchStatement expr' stmt')
+
+    checkSwitchLabels :: SwitchLabels -> TypM SwitchLabels
+    checkSwitchLabels label = do
+      state <- get
+      let switchExprType = case maybeSwitchExprType state of
+            Just t -> t
+            Nothing -> error "Internal Error: checkSwitchLabels called outside of switch context"
+          label' = case label of
+            Case n ->
+              if isIntegralType switchExprType
+                then Case (truncateIntegral switchExprType n)
+                else error $ "Internal Error: switch expression type is not integral: " ++ show switchExprType
+            Default -> Default
+      case switchLabels state of
+        [] -> throwError $ "not in a switch context: " ++ show label
+        (current : rest) -> case Data.Map.lookup label' current of
+          Just _ -> throwError $ "duplicate label " ++ show label ++ " in switch context"
+          Nothing -> do
+            let current' = Data.Map.insert label' () current
+            put state {switchLabels = current' : rest}
+            return label'
 
     tcExpression :: Expression () -> TypM (Expression CType)
     tcExpression (Variable _ name) = do
@@ -709,6 +729,31 @@ typecheck program = do
       left' <- tcExpression left
       right' <- tcExpression right
       return (Binary IntT LogicOr left' right')
+    tcExpression (Binary _ Assignment left right) = do
+      left' <- tcExpression left
+      let t = typeOf left'
+      right' <- tcExpression right
+      right'' <- convertTo t right'
+      return (Binary t Assignment left' right'')
+    tcExpression (Binary _ (CompoundAssignment op) left right) = do
+      {- careful when lvalues with side effects are involved -}
+      left' <- tcExpression left
+      right' <- tcExpression (Binary () op left right)
+      let t = typeOf left'
+      right'' <- convertTo t right'
+      return (Binary t Assignment left' right'')
+    tcExpression (Binary _ ShiftLeft left right) = do
+      left' <- tcExpression left
+      right' <- tcExpression right
+      unless (isIntegralType (typeOf left')) $ throwError $ "Left operand of shift must be integral, got " ++ show left'
+      unless (isIntegralType (typeOf right')) $ throwError $ "Right operand of shift must be integral, got " ++ show right'
+      return (Binary (typeOf left') ShiftLeft left' right')
+    tcExpression (Binary _ ShiftRight left right) = do
+      left' <- tcExpression left
+      right' <- tcExpression right
+      unless (isIntegralType (typeOf left')) $ throwError $ "Left operand of shift must be integral, got " ++ show left'
+      unless (isIntegralType (typeOf right')) $ throwError $ "Right operand of shift must be integral, got " ++ show right'
+      return (Binary (typeOf left') ShiftRight left' right')
     tcExpression (Binary _ op left right) = do
       (commonT, left', right') <- makeCommonType left right
       let t = case op of

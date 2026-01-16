@@ -257,9 +257,9 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
           case_jump (Default, _) = return []
           case_jump (Case n, jump_target) = do
             varid <- newId "tmp"
-            let destination = Variable IntT False varid
+            let destination = Variable (typeOf expr) False varid
             return
-              [ Binary P.Equal cond_value (Constant IntT n) destination,
+              [ Binary P.Equal cond_value (Constant (typeOf expr) n) destination,
                 JumpIfNotZero jump_target destination
               ]
       case_jumps_list <- mapM case_jump (Data.Map.toList switchLabelsMap)
@@ -278,7 +278,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       stmt_instructions <- translateStatement stmt
       return (Label labelName : stmt_instructions)
     translateStatement (P.LabelledStatement (P.CaseLabel value) stmt) = do
-      label <- newId $ "switch.case" ++ show value
+      label <- newId $ "switch.case_" ++ if value < 0 then "neg_" ++ show (-value) else show value
       stmt_instructions <- translateStatement stmt
       state <- get
       let switchLabelsMap = fromJust (switchLabels state)
@@ -405,8 +405,8 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
             ++ [Binary op left' right' destination, Copy destination left'],
           destination
         )
-    translateExpression (P.Binary _ P.Assignment _ _) = error "assign to non-variable."
-    translateExpression (P.Binary _ (P.CompoundAssignment _) _ _) = error "assign to non-variable."
+    translateExpression expr@(P.Binary _ P.Assignment _ _) = error $ "assign to non-variable: " ++ show expr
+    translateExpression expr@(P.Binary _ (P.CompoundAssignment _) _ _) = error $ "assign to non-variable: " ++ show expr
     translateExpression (P.Binary t op left right) = do
       (l_instructions, left') <- translateExpression left
       (r_instructions, right') <- translateExpression right
