@@ -7,7 +7,7 @@ module AsmAst
   )
 where
 
-import CTypes (CType (..))
+import CTypes (ArithmeticType (..), CType (..), IntSize (..), IntegralType (..), Signed (..), intT)
 import Control.Monad.State
 import Data.Bits (Bits (shiftL))
 import qualified Data.Map
@@ -25,9 +25,6 @@ data TopLevel
   = Function String Bool [Instruction]
   | StaticVariable AsmType String Bool Integer
   deriving (Show)
-
-data Signed = Signed | Unsigned
-  deriving (Show, Eq)
 
 data Instruction
   = TwoOp TwoOperandInstruction AsmType Operand Operand
@@ -110,17 +107,12 @@ data AsmType
   deriving (Show, Eq, Ord)
 
 asmType :: CType -> AsmType
-asmType IntT = Longword
-asmType LongIntT = Quadword
-asmType UIntT = Longword
-asmType ULongIntT = Quadword
+asmType (ArithmeticType (Integral (IType _ Int))) = Longword
+asmType (ArithmeticType (Integral (IType _ Long))) = Quadword
 asmType _ = error "Unsupported CType for AsmType."
 
 asmSign :: CType -> Signed
-asmSign IntT = Signed
-asmSign LongIntT = Signed
-asmSign UIntT = Unsigned
-asmSign ULongIntT = Unsigned
+asmSign (ArithmeticType (Integral (IType s _))) = s
 asmSign _ = error "Unsupported CType for asmSign."
 
 asmValueType :: T.Value -> AsmType
@@ -168,7 +160,7 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateP
       ]
     translateInstruction (T.Unary LogicNot src dst) =
       [ TwoOp Cmp (asmValueType src) (Imm 0) (translateValue src),
-        TwoOp Mov (asmType IntT) (Imm 0) (translateValue dst),
+        TwoOp Mov (asmType intT) (Imm 0) (translateValue dst),
         SetCC E (translateValue dst)
       ]
     translateInstruction (T.Unary op src dst) =
@@ -200,7 +192,7 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateP
         Relational condition ->
           let dest = translateValue dst
            in [ TwoOp Cmp (asmValueType right) (translateValue right) (translateValue left),
-                TwoOp Mov (asmType IntT) (Imm 0) dest,
+                TwoOp Mov (asmType intT) (Imm 0) dest,
                 SetCC condition dest
               ]
     translateInstruction (T.Copy src dst) =

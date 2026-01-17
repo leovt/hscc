@@ -9,7 +9,7 @@ module Validate
   )
 where
 
-import CTypes (CType (..), commonType, isIntegralType, truncateIntegral)
+import CTypes (ArithmeticType (..), CType (..), IntegralType (..), commonType, intT, isIntegralType, truncateIntegral)
 import Control.Monad (unless, when, zipWithM)
 import Control.Monad.Except
 import Control.Monad.State
@@ -65,7 +65,7 @@ data TypecheckState = TypecheckState
   { symbolTable :: SymbolTable,
     maybeReturnType :: Maybe CType,
     switchLabels :: [Data.Map.Map SwitchLabels ()],
-    maybeSwitchExprType :: Maybe CType
+    maybeSwitchExprType :: Maybe IntegralType
   }
 
 type ResM a = ExceptT String (State ResolutionState) a -- the resolution monad encapsulating the resolution state
@@ -673,11 +673,14 @@ typecheck program = do
     tcStatement ContinueStatement = return ContinueStatement
     tcStatement (SwitchStatement expr stmt) = do
       expr' <- tcExpression expr
+      switchExprType <- case typeOf expr' of
+        ArithmeticType (Integral it) -> return it
+        _ -> throwError $ "Internal Error: switch expression is not integral: " ++ show expr'
       unless (isIntegralType (typeOf expr')) $
         throwError $
           "Switch expression must be integral, got " ++ show expr'
       state_before <- get
-      put state_before {switchLabels = Data.Map.empty : switchLabels state_before, maybeSwitchExprType = Just (typeOf expr')}
+      put state_before {switchLabels = Data.Map.empty : switchLabels state_before, maybeSwitchExprType = Just switchExprType}
       stmt' <- tcStatement stmt
       state_after <- get
       put state_after {switchLabels = switchLabels state_before, maybeSwitchExprType = maybeSwitchExprType state_before}
@@ -690,10 +693,7 @@ typecheck program = do
             Just t -> t
             Nothing -> error "Internal Error: checkSwitchLabels called outside of switch context"
           label' = case label of
-            Case n ->
-              if isIntegralType switchExprType
-                then Case (truncateIntegral switchExprType n)
-                else error $ "Internal Error: switch expression type is not integral: " ++ show switchExprType
+            Case n -> Case (truncateIntegral switchExprType n)
             Default -> Default
       case switchLabels state of
         [] -> throwError $ "not in a switch context: " ++ show label
@@ -713,7 +713,7 @@ typecheck program = do
         Nothing -> throwError $ "tcExpression: Undeclared variable " ++ name
     tcExpression (Unary _ LogicNot expr) = do
       expr' <- tcExpression expr
-      return (Unary IntT LogicNot expr')
+      return (Unary intT LogicNot expr')
     tcExpression (Unary _ op expr) = do
       expr' <- tcExpression expr
       when (op == PreIncrement || op == PreDecrement || op == PostIncrement || op == PostDecrement) $
@@ -724,11 +724,11 @@ typecheck program = do
     tcExpression (Binary _ LogicAnd left right) = do
       left' <- tcExpression left
       right' <- tcExpression right
-      return (Binary IntT LogicAnd left' right')
+      return (Binary intT LogicAnd left' right')
     tcExpression (Binary _ LogicOr left right) = do
       left' <- tcExpression left
       right' <- tcExpression right
-      return (Binary IntT LogicOr left' right')
+      return (Binary intT LogicOr left' right')
     tcExpression (Binary _ Assignment left right) = do
       left' <- tcExpression left
       let t = typeOf left'
@@ -757,12 +757,12 @@ typecheck program = do
     tcExpression (Binary _ op left right) = do
       (commonT, left', right') <- makeCommonType left right
       let t = case op of
-            Equal -> IntT
-            NotEqual -> IntT
-            Less -> IntT
-            Greater -> IntT
-            LessOrEqual -> IntT
-            GreaterOrEqual -> IntT
+            Equal -> intT
+            NotEqual -> intT
+            Less -> intT
+            Greater -> intT
+            LessOrEqual -> intT
+            GreaterOrEqual -> intT
             _ -> commonT
       return (Binary t op left' right')
     tcExpression (Constant t c) = pure (Constant t c)

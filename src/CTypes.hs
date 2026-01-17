@@ -3,46 +3,74 @@ module CTypes
     commonType,
     isIntegralType,
     truncateIntegral,
+    intT,
+    longIntT,
+    uIntT,
+    uLongIntT,
+    funcT,
+    IntegralType (..),
+    Signed (..),
+    IntSize (..),
+    ArithmeticType (..),
   )
 where
 
 import Data.Bits (Bits (shiftL))
 
 data CType
-  = IntT
-  | LongIntT
-  | UIntT
-  | ULongIntT
+  = ArithmeticType ArithmeticType
   | FuncT CType [CType]
   deriving (Eq, Show)
 
+data Signed = Signed | Unsigned
+  deriving (Show, Eq)
+
+data IntSize = Int | Long
+  deriving (Show, Eq)
+
+data IntegralType = IType Signed IntSize
+  deriving (Show, Eq)
+
+data ArithmeticType
+  = Integral IntegralType
+  deriving (Show, Eq)
+
+{- helper constructors -}
+intT :: CType
+intT = ArithmeticType (Integral (IType Signed Int))
+
+longIntT :: CType
+longIntT = ArithmeticType (Integral (IType Signed Long))
+
+uIntT :: CType
+uIntT = ArithmeticType (Integral (IType Unsigned Int))
+
+uLongIntT :: CType
+uLongIntT = ArithmeticType (Integral (IType Unsigned Long))
+
+funcT :: CType -> [CType] -> CType
+funcT = FuncT
+
 commonType :: CType -> CType -> Maybe CType
-commonType IntT IntT = Just IntT
-commonType LongIntT LongIntT = Just LongIntT
-commonType UIntT UIntT = Just UIntT
-commonType ULongIntT ULongIntT = Just ULongIntT
-commonType IntT LongIntT = Just LongIntT
-commonType LongIntT IntT = Just LongIntT
-commonType UIntT ULongIntT = Just ULongIntT
-commonType ULongIntT UIntT = Just ULongIntT
-commonType IntT UIntT = Just UIntT
-commonType UIntT IntT = Just UIntT
-commonType _ ULongIntT = Just ULongIntT
-commonType ULongIntT _ = Just ULongIntT
-commonType UIntT LongIntT = Just LongIntT
-commonType LongIntT UIntT = Just LongIntT
+commonType (ArithmeticType t1@(Integral (IType s1 sz1))) (ArithmeticType t2@(Integral (IType s2 sz2)))
+  | t1 == t2 = Just (ArithmeticType t1)
+  | otherwise =
+      case (s1, sz1, s2, sz2) of
+        (Unsigned, Long, _, _) -> Just uLongIntT
+        (_, _, Unsigned, Long) -> Just uLongIntT
+        (_, Int, Signed, Long) -> Just longIntT
+        (Signed, Long, _, Int) -> Just longIntT
+        (Unsigned, Int, Signed, Int) -> Just uIntT
+        (Signed, Int, Unsigned, Int) -> Just uIntT
+        _ -> Nothing
 commonType _ _ = Nothing
 
 isIntegralType :: CType -> Bool
-isIntegralType IntT = True
-isIntegralType LongIntT = True
-isIntegralType UIntT = True
-isIntegralType ULongIntT = True
+isIntegralType (ArithmeticType (Integral _)) = True
 isIntegralType _ = False
 
-truncateIntegral :: CType -> Integer -> Integer
-truncateIntegral IntT n = (n + (1 `shiftL` 31)) `mod` (1 `shiftL` 32) - (1 `shiftL` 31)
-truncateIntegral LongIntT n = (n + (1 `shiftL` 63)) `mod` (1 `shiftL` 64) - (1 `shiftL` 63)
-truncateIntegral UIntT n = n `mod` (1 `shiftL` 32)
-truncateIntegral ULongIntT n = n `mod` (1 `shiftL` 64)
-truncateIntegral _ _ = error "truncateIntegral: not an integral type"
+truncateIntegral :: IntegralType -> Integer -> Integer
+truncateIntegral (IType Signed Int) n = (n + (1 `shiftL` 31)) `mod` (1 `shiftL` 32) - (1 `shiftL` 31)
+truncateIntegral (IType Signed Long) n = (n + (1 `shiftL` 63)) `mod` (1 `shiftL` 64) - (1 `shiftL` 63)
+truncateIntegral (IType Unsigned Int) n = n `mod` (1 `shiftL` 32)
+truncateIntegral (IType Unsigned Long) n = n `mod` (1 `shiftL` 64)

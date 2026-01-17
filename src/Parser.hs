@@ -444,10 +444,10 @@ parseType tokens = do
 
   (signed, unsigned, long, int) <- go tokens (False, False, False, False)
   case (signed, unsigned, long, int) of
-    (_, True, True, _) -> return ULongIntT
-    (_, True, False, _) -> return UIntT
-    (_, False, True, _) -> return LongIntT
-    (_, False, False, _) -> return IntT
+    (_, True, True, _) -> return uLongIntT
+    (_, True, False, _) -> return uIntT
+    (_, False, True, _) -> return longIntT
+    (_, False, False, _) -> return intT
 
 parseDeclaration :: ScopeLevel -> [Token] -> Either String (Declaration (), [Token])
 parseDeclaration scope tokens = do
@@ -567,16 +567,16 @@ parseExpression = parse_expression_prec 0
 
 parseIntLiteral :: Integer -> IntSuffix -> Either String (Expression ())
 parseIntLiteral n NoSuffix
-  | n < 1 `shiftL` 31 = Right (Constant IntT n)
-  | n < 1 `shiftL` 63 = Right (Constant LongIntT n)
+  | n < 1 `shiftL` 31 = Right (Constant intT n)
+  | n < 1 `shiftL` 63 = Right (Constant longIntT n)
   | otherwise = Left "Integer literal out of range"
 parseIntLiteral n LSuffix
-  | n < 1 `shiftL` 63 = Right (Constant LongIntT n)
+  | n < 1 `shiftL` 63 = Right (Constant longIntT n)
   | otherwise = Left "Integer literal out of range"
 parseIntLiteral n USuffix
-  | n < 1 `shiftL` 32 = Right (Constant UIntT n)
-  | n < 1 `shiftL` 64 = Right (Constant ULongIntT n)
+  | n < 1 `shiftL` 32 = Right (Constant uIntT n)
+  | n < 1 `shiftL` 64 = Right (Constant uLongIntT n)
   | otherwise = Left "Integer literal out of range"
 parseIntLiteral n LUSuffix
-  | n < 1 `shiftL` 64 = Right (Constant ULongIntT n)
+  | n < 1 `shiftL` 64 = Right (Constant uLongIntT n)
   | otherwise = Left "Integer literal out of range"
