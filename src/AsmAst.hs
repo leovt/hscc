@@ -26,10 +26,14 @@ data TopLevel
   | StaticVariable AsmType String Bool Integer
   deriving (Show)
 
+data Signed = Signed | Unsigned
+  deriving (Show, Eq)
+
 data Instruction
   = TwoOp TwoOperandInstruction AsmType Operand Operand
   | OneOp OneOperandInstruction AsmType Operand
   | MovSX Operand Operand
+  | MovZX Operand Operand
   | AllocateStack Int
   | DeallocateStack Int
   | Jmp String
@@ -43,7 +47,7 @@ data Instruction
   deriving (Show)
 
 data OneOperandInstruction
-  = Div
+  = Div Signed
   | Not
   | Neg
   deriving (Show)
@@ -58,10 +62,10 @@ data TwoOperandInstruction
   | Or
   | Xor
   | ShLeft
-  | ShRight
+  | ShRight Signed
   deriving (Show)
 
-data Condition = E | NE | G | GE | L | LE
+data Condition = E | NE | G | GE | L | LE | A | AE | B | BE
   deriving (Show)
 
 data MemoryOperand
@@ -108,10 +112,22 @@ data AsmType
 asmType :: CType -> AsmType
 asmType IntT = Longword
 asmType LongIntT = Quadword
+asmType UIntT = Longword
+asmType ULongIntT = Quadword
 asmType _ = error "Unsupported CType for AsmType."
+
+asmSign :: CType -> Signed
+asmSign IntT = Signed
+asmSign LongIntT = Signed
+asmSign UIntT = Unsigned
+asmSign ULongIntT = Unsigned
+asmSign _ = error "Unsupported CType for asmSign."
 
 asmValueType :: T.Value -> AsmType
 asmValueType = asmType . valueType
+
+asmValueSign :: T.Value -> Signed
+asmValueSign = asmSign . valueType
 
 translateTACtoASM :: T.Program -> Program
 translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateProgram
@@ -161,18 +177,22 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateP
       ]
     translateInstruction (T.Binary Divide left right dst) =
       [ TwoOp Mov (asmValueType left) (translateValue left) (Register AX),
-        Cdq (asmValueType left),
-        OneOp Div (asmValueType right) (translateValue right),
+        case asmValueSign left of
+          Signed -> Cdq (asmValueType left)
+          Unsigned -> TwoOp Mov (asmValueType left) (Imm 0) (Register DX),
+        OneOp (Div (asmValueSign right)) (asmValueType right) (translateValue right),
         TwoOp Mov (asmValueType left) (Register AX) (translateValue dst)
       ]
     translateInstruction (T.Binary Remainder left right dst) =
       [ TwoOp Mov (asmValueType left) (translateValue left) (Register AX),
-        Cdq (asmValueType left),
-        OneOp Div (asmValueType right) (translateValue right),
+        case asmValueSign left of
+          Signed -> Cdq (asmValueType left)
+          Unsigned -> TwoOp Mov (asmValueType left) (Imm 0) (Register DX),
+        OneOp (Div (asmValueSign right)) (asmValueType right) (translateValue right),
         TwoOp Mov (asmValueType left) (Register DX) (translateValue dst)
       ]
     translateInstruction (T.Binary op left right dst) =
-      case translateBinary op of
+      case translateBinary (asmValueSign left) op of
         Arithmetic instruction ->
           [ TwoOp Mov (asmValueType dst) (translateValue left) (translateValue dst),
             TwoOp instruction (asmValueType dst) (translateValue right) (translateValue dst)
@@ -225,6 +245,7 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateP
           op@(Register _) -> [Push op]
           op -> [TwoOp Mov (asmValueType val) op (Register AX), Push (Register AX)]
     translateInstruction (T.SignExtend src dst) = [MovSX (translateValue src) (translateValue dst)]
+    translateInstruction (T.ZeroExtend src dst) = [MovZX (translateValue src) (translateValue dst)]
     translateInstruction (T.Truncate src dst) = [TwoOp Mov Longword (translateValue src) (translateValue dst)]
 
     translateUnary :: UnaryOperator -> OneOperandInstruction
@@ -236,27 +257,31 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateP
     translateUnary PostIncrement = error "PostIncrement does not translate to a one operand form."
     translateUnary PostDecrement = error "PostDecrement does not translate to a one operand form."
 
-    translateBinary :: BinaryOperator -> Binop
-    translateBinary P.Add = Arithmetic AsmAst.Add
-    translateBinary Subtract = Arithmetic Sub
-    translateBinary Multiply = Arithmetic Mul
-    translateBinary BitAnd = Arithmetic And
-    translateBinary BitOr = Arithmetic Or
-    translateBinary BitXor = Arithmetic Xor
-    translateBinary ShiftLeft = Arithmetic ShLeft
-    translateBinary ShiftRight = Arithmetic ShRight
-    translateBinary Equal = Relational E
-    translateBinary NotEqual = Relational NE
-    translateBinary Less = Relational L
-    translateBinary Greater = Relational G
-    translateBinary LessOrEqual = Relational LE
-    translateBinary GreaterOrEqual = Relational GE
-    translateBinary Divide = error "Divide does not translate to a two operand form."
-    translateBinary Remainder = error "Remainder does not translate to a two operand form."
-    translateBinary LogicAnd = error "LogicAnd does not translate to a two operand form."
-    translateBinary LogicOr = error "LogicOr does not translate to a two operand form."
-    translateBinary Assignment = error "Assignment does not translate to a two operand form."
-    translateBinary (CompoundAssignment _) = error "CompoundAssignment does not translate to a two operand form."
+    translateBinary :: Signed -> BinaryOperator -> Binop
+    translateBinary _ P.Add = Arithmetic AsmAst.Add
+    translateBinary _ Subtract = Arithmetic Sub
+    translateBinary _ Multiply = Arithmetic Mul
+    translateBinary _ BitAnd = Arithmetic And
+    translateBinary _ BitOr = Arithmetic Or
+    translateBinary _ BitXor = Arithmetic Xor
+    translateBinary _ ShiftLeft = Arithmetic ShLeft
+    translateBinary sign ShiftRight = Arithmetic (ShRight sign)
+    translateBinary _ Equal = Relational E
+    translateBinary _ NotEqual = Relational NE
+    translateBinary Signed Less = Relational L
+    translateBinary Signed Greater = Relational G
+    translateBinary Signed LessOrEqual = Relational LE
+    translateBinary Signed GreaterOrEqual = Relational GE
+    translateBinary Unsigned Less = Relational B
+    translateBinary Unsigned Greater = Relational A
+    translateBinary Unsigned LessOrEqual = Relational BE
+    translateBinary Unsigned GreaterOrEqual = Relational AE
+    translateBinary _ Divide = error "Divide does not translate to a two operand form."
+    translateBinary _ Remainder = error "Remainder does not translate to a two operand form."
+    translateBinary _ LogicAnd = error "LogicAnd does not translate to a two operand form."
+    translateBinary _ LogicOr = error "LogicOr does not translate to a two operand form."
+    translateBinary _ Assignment = error "Assignment does not translate to a two operand form."
+    translateBinary _ (CompoundAssignment _) = error "CompoundAssignment does not translate to a two operand form."
 
     translateValue :: T.Value -> Operand
     translateValue (T.Constant _ c) = Imm c
@@ -307,6 +332,10 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
       src' <- replacePseudoOp src
       dst' <- replacePseudoOp dst
       return (MovSX src' dst')
+    replacePseudoIns (MovZX src dst) = do
+      src' <- replacePseudoOp src
+      dst' <- replacePseudoOp dst
+      return (MovZX src' dst')
     replacePseudoIns any = return any
 
     replacePseudoFun :: TopLevel -> TransM TopLevel
@@ -341,10 +370,10 @@ fixInstructions (Program fun) = Program (map fixInstructionsFun fun)
       [ TwoOp Mov t src (Register CX),
         TwoOp ShLeft t (Register CX) dst
       ]
-    fixInstr (TwoOp ShRight t (Imm n) dst) = [TwoOp ShRight t (Imm n) dst]
-    fixInstr (TwoOp ShRight t src dst) =
+    fixInstr (TwoOp (ShRight sign) t (Imm n) dst) = [TwoOp (ShRight sign) t (Imm n) dst]
+    fixInstr (TwoOp (ShRight sign) t src dst) =
       [ TwoOp Mov t src (Register CX),
-        TwoOp ShRight t (Register CX) dst
+        TwoOp (ShRight sign) t (Register CX) dst
       ]
     fixInstr (TwoOp Cmp t src (Imm n)) =
       [ TwoOp Mov t (Imm n) (Register R11),
@@ -354,9 +383,9 @@ fixInstructions (Program fun) = Program (map fixInstructionsFun fun)
       [ TwoOp Mov t src (Register R10),
         TwoOp op t (Register R10) dst
       ]
-    fixInstr (OneOp Div t (Imm n)) =
+    fixInstr (OneOp op@(Div _) t (Imm n)) =
       [ TwoOp Mov t (Imm n) (Register R10),
-        OneOp Div t (Register R10)
+        OneOp op t (Register R10)
       ]
     fixInstr (MovSX src@(Imm _) dst@(Memory _)) =
       [ TwoOp Mov Longword src (Register R10),
@@ -370,6 +399,13 @@ fixInstructions (Program fun) = Program (map fixInstructionsFun fun)
     fixInstr (MovSX src@(Imm _) dst) =
       [ TwoOp Mov Longword src (Register R10),
         MovSX (Register R10) dst
+      ]
+    fixInstr (MovZX src dst@(Register _)) =
+      [ TwoOp Mov Longword src dst
+      ]
+    fixInstr (MovZX src dst) =
+      [ TwoOp Mov Longword src (Register R11),
+        TwoOp Mov Quadword (Register R11) dst
       ]
     fixInstr ins = [ins]
 
@@ -419,7 +455,7 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
 
     emitInstruction :: Instruction -> String
     emitInstruction ins@(TwoOp ShLeft t src dst) = "    " ++ twoOp ShLeft t ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand (regSize t) dst ++ comment ins
-    emitInstruction ins@(TwoOp ShRight t src dst) = "    " ++ twoOp ShRight t ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand (regSize t) dst ++ comment ins
+    emitInstruction ins@(TwoOp shift@(ShRight _) t src dst) = "    " ++ twoOp shift t ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand (regSize t) dst ++ comment ins
     emitInstruction ins@(TwoOp op t src dst) = "    " ++ twoOp op t ++ " " ++ emitOperand (regSize t) src ++ ", " ++ emitOperand (regSize t) dst ++ comment ins
     emitInstruction (OneOp op t src) = "    " ++ oneOp op t ++ " " ++ emitOperand (regSize t) src
     emitInstruction (AllocateStack n) = "    subq $" ++ show n ++ ", %rsp"
@@ -434,6 +470,7 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     emitInstruction (Push src) = "    pushq " ++ emitOperand Reg8 src
     emitInstruction (Call name) = "    call " ++ name
     emitInstruction (MovSX src dst) = "    movslq " ++ emitOperand Reg4 src ++ ", " ++ emitOperand Reg8 dst
+    emitInstruction (MovZX _ _) = error "emitInstruction: MovZX not implemented, should be removed in fixInstructions"
 
     srcComment :: Instruction -> String
     srcComment (TwoOp _ _ src@(Memory (Stack _ name)) _) = " # " ++ emitOperand Reg8 src ++ " = " ++ name
@@ -455,11 +492,13 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     twoOp Or t = "or" ++ typeSuffix t
     twoOp Xor t = "xor" ++ typeSuffix t
     twoOp ShLeft t = "sal" ++ typeSuffix t
-    twoOp ShRight t = "sar" ++ typeSuffix t
+    twoOp (ShRight Signed) t = "sar" ++ typeSuffix t
+    twoOp (ShRight Unsigned) t = "shr" ++ typeSuffix t
     twoOp Cmp t = "cmp" ++ typeSuffix t
 
     oneOp :: OneOperandInstruction -> AsmType -> String
-    oneOp Div t = "idiv" ++ typeSuffix t
+    oneOp (Div Signed) t = "idiv" ++ typeSuffix t
+    oneOp (Div Unsigned) t = "div" ++ typeSuffix t
     oneOp Neg t = "neg" ++ typeSuffix t
     oneOp Not t = "not" ++ typeSuffix t
 
@@ -470,6 +509,10 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     cond GE = "ge"
     cond L = "l"
     cond LE = "le"
+    cond A = "a"
+    cond AE = "ae"
+    cond B = "b"
+    cond BE = "be"
 
     typeSuffix :: AsmType -> String
     typeSuffix Longword = "l"

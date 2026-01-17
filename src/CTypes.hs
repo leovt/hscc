@@ -43,4 +43,6 @@ isIntegralType _ = False
 truncateIntegral :: CType -> Integer -> Integer
 truncateIntegral IntT n = (n + (1 `shiftL` 31)) `mod` (1 `shiftL` 32) - (1 `shiftL` 31)
 truncateIntegral LongIntT n = (n + (1 `shiftL` 63)) `mod` (1 `shiftL` 64) - (1 `shiftL` 63)
+truncateIntegral UIntT n = n `mod` (1 `shiftL` 32)
+truncateIntegral ULongIntT n = n `mod` (1 `shiftL` 64)
 truncateIntegral _ _ = error "truncateIntegral: not an integral type"

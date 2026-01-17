@@ -8,7 +8,7 @@ module TAC
   )
 where
 
-import CTypes (CType (IntT))
+import CTypes (CType (..))
 import Control.Monad.State
 import Data.Map (toList)
 import qualified Data.Map
@@ -48,6 +48,7 @@ data Instruction
   | Label String
   | FunctionCall String [Value] Value
   | SignExtend Value Value
+  | ZeroExtend Value Value
   | Truncate Value Value
   deriving (Show)
 
@@ -450,7 +451,13 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
           varid <- newId "tmp.cast"
           let destination = Variable t False varid
           let cast_instruction = case (typeOf expr, t) of
+                (IntT, UIntT) -> Copy value destination
+                (UIntT, IntT) -> Copy value destination
+                (LongIntT, ULongIntT) -> Copy value destination
+                (ULongIntT, LongIntT) -> Copy value destination
                 (IntT, _) -> SignExtend value destination
+                (UIntT, _) -> ZeroExtend value destination
                 (_, IntT) -> Truncate value destination
+                (_, UIntT) -> Truncate value destination
                 _ -> error "Unsupported cast."
           return (instructions ++ [cast_instruction], destination)
