@@ -6,6 +6,7 @@ module Validate
     SymbolAttributes (..),
     Initializer (..),
     typeOf,
+    zero,
   )
 where
 
@@ -19,6 +20,7 @@ import Parser
   ( BinaryOperator (..),
     Block (..),
     BlockItem (..),
+    ConstValue (..),
     Declaration (..),
     Expression (..),
     ForInitializer (..),
@@ -78,7 +80,7 @@ data SymbolState
   deriving (Show, Eq)
 
 data Initializer
-  = Initial Integer
+  = Initial ConstValue
   | Tentative
   | NoInitializer
   deriving (Show, Eq)
@@ -528,7 +530,7 @@ typecheck program = do
     tcDeclaration (VarDecl (VariableDeclaration varT name init StorageStatic BlockScope)) = do
       syminit <- case init of
         Just (Constant _ n) -> return $ Initial n
-        Nothing -> return $ Initial 0
+        Nothing -> return $ Initial (zero varT)
         _ -> throwError "Implementation limitation: only constants as initializer"
       state <- get
       let (SymbolTable symtab) = symbolTable state
@@ -827,3 +829,8 @@ typecheck program = do
                 ++ show (typeOf left)
                 ++ " and "
                 ++ show (typeOf right)
+
+zero :: CType -> ConstValue
+zero (ArithmeticType (Integral _)) = IntValue 0
+zero (ArithmeticType DoubleType) = DoubleValue 0.0
+zero _ = error "Implementation Error: zero for non-arithmetic type"

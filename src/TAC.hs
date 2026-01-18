@@ -15,6 +15,7 @@ import qualified Data.Map
 import Data.Maybe (catMaybes, fromJust)
 import Parser
   ( BinaryOperator,
+    ConstValue (..),
     UnaryOperator,
   )
 import qualified Parser as P
@@ -25,6 +26,7 @@ import Validate
     SymbolInfo (..),
     SymbolTable (..),
     typeOf,
+    zero,
   )
 
 {- HLINT ignore "Use newtype instead of data" -}
@@ -34,7 +36,7 @@ data Program
 
 data TopLevel
   = Function String Bool [Value] [Instruction]
-  | StaticVariable CType String Bool Integer
+  | StaticVariable CType String Bool ConstValue
   deriving (Show)
 
 data Instruction
@@ -53,7 +55,7 @@ data Instruction
   deriving (Show)
 
 data Value
-  = Constant CType Integer
+  = Constant CType ConstValue
   | Variable CType Bool String {- static duration, name -}
   deriving (Show)
 
@@ -98,7 +100,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
     translateSymbol (name, SymbolInfo varT (StaticVariableAttr (Initial init) global)) =
       Just $ StaticVariable varT name global init
     translateSymbol (name, SymbolInfo varT (StaticVariableAttr Tentative global)) =
-      Just $ StaticVariable varT name global 0
+      Just $ StaticVariable varT name global (zero varT)
     translateSymbol _ = Nothing
 
     translateDeclaration :: P.Declaration CType -> TransM (Maybe TopLevel)
@@ -112,7 +114,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
             Nothing -> error $ "symbol not found " ++ name
             Just (SymbolInfo _type (FunctionAttr _ g)) -> g
             _ -> error $ "symbol a function symbol " ++ name
-      return $ Just (Function name global (map (\(paramT, name) -> Variable paramT False (fromJust name)) params) (instructions ++ [Return (Constant retT 0)]))
+      return $ Just (Function name global (map (\(paramT, name) -> Variable paramT False (fromJust name)) params) (instructions ++ [Return (Constant retT (zero retT))]))
     translateFunction (P.FunctionDeclaration _ _ _ Nothing _ _) = return Nothing
 
     translateBlock :: P.Block CType -> TransM [Instruction]
@@ -260,7 +262,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
             varid <- newId "tmp"
             let destination = Variable (typeOf expr) False varid
             return
-              [ Binary P.Equal cond_value (Constant (typeOf expr) n) destination,
+              [ Binary P.Equal cond_value (Constant (typeOf expr) (IntValue n)) destination,
                 JumpIfNotZero jump_target destination
               ]
       case_jumps_list <- mapM case_jump (Data.Map.toList switchLabelsMap)
@@ -303,7 +305,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       let destination = Variable t False varid
       (_, var') <- translateExpression var
       return
-        ( [ Binary P.Add var' (Constant t 1) destination,
+        ( [ Binary P.Add var' (Constant t (IntValue 1)) destination,
             Copy destination var'
           ],
           destination
@@ -313,7 +315,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       let destination = Variable t False varid
       (_, var') <- translateExpression var
       return
-        ( [ Binary P.Subtract var' (Constant t 1) destination,
+        ( [ Binary P.Subtract var' (Constant t (IntValue 1)) destination,
             Copy destination var'
           ],
           destination
@@ -326,7 +328,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       (_, var') <- translateExpression var
       return
         ( [ Copy var' destination,
-            Binary P.Add destination (Constant t 1) newvalue,
+            Binary P.Add destination (Constant t (IntValue 1)) newvalue,
             Copy newvalue var'
           ],
           destination
@@ -339,7 +341,7 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
       (_, var') <- translateExpression var
       return
         ( [ Copy var' destination,
-            Binary P.Subtract destination (Constant t 1) newvalue,
+            Binary P.Subtract destination (Constant t (IntValue 1)) newvalue,
             Copy newvalue var'
           ],
           destination
@@ -365,10 +367,10 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
               ++ [JumpIfZero false_label left']
               ++ r_instructions
               ++ [ JumpIfZero false_label right',
-                   Copy (Constant t 1) destination,
+                   Copy (Constant t (IntValue 1)) destination,
                    Jump end_label,
                    Label false_label,
-                   Copy (Constant t 0) destination,
+                   Copy (Constant t (IntValue 0)) destination,
                    Label end_label
                  ]
       return (instructions, destination)
@@ -384,10 +386,10 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
               ++ [JumpIfNotZero true_label left']
               ++ r_instructions
               ++ [ JumpIfNotZero true_label right',
-                   Copy (Constant t 0) destination,
+                   Copy (Constant t (IntValue 0)) destination,
                    Jump end_label,
                    Label true_label,
-                   Copy (Constant t 1) destination,
+                   Copy (Constant t (IntValue 1)) destination,
                    Label end_label
                  ]
       return (instructions, destination)

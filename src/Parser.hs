@@ -16,6 +16,7 @@ module Parser
     ForInitializer (..),
     StorageClass (..),
     ScopeLevel (..),
+    ConstValue (..),
   )
 where
 
@@ -96,8 +97,13 @@ data Statement t
   | NullStatement
   deriving (Show)
 
+data ConstValue
+  = IntValue Integer
+  | DoubleValue Double
+  deriving (Eq, Show)
+
 data Expression t
-  = Constant CType Integer
+  = Constant CType ConstValue
   | Variable t String
   | Unary t UnaryOperator (Expression t)
   | Binary t BinaryOperator (Expression t) (Expression t)
@@ -203,6 +209,7 @@ isTypeSpecifier TokKeyInt = True
 isTypeSpecifier TokKeyLong = True
 isTypeSpecifier TokKeySigned = True
 isTypeSpecifier TokKeyUnsigned = True
+isTypeSpecifier TokKeyDouble = True
 isTypeSpecifier _ = False
 
 associativity :: BinaryOperator -> Int
@@ -434,6 +441,7 @@ decodeSpecifiers specifiers = do
 
 parseType :: [Token] -> Either String CType
 parseType [] = Left "Missing type specifiers."
+parseType [TokKeyDouble] = return doubleT
 parseType tokens = do
   let go [] (signed, unsigned, long, int) = return (signed, unsigned, long, int)
       go (TokKeySigned : toks) (False, False, l, i) = go toks (True, False, l, i)
@@ -486,6 +494,7 @@ parseFactorPrefix :: [Token] -> Either String (Expression (), [Token])
 parseFactorPrefix ((TokInt n suffix) : tail) = do
   const <- parseIntLiteral n suffix
   return (const, tail)
+parseFactorPrefix (TokFloat d : tail) = return (Constant doubleT (DoubleValue d), tail)
 parseFactorPrefix ((TokIdent n) : TokOpenParen : tail) = do
   let parse_arguments :: [Expression ()] -> [Token] -> Either String ([Expression ()], [Token])
       parse_arguments [] (TokCloseParen : rest) = return ([], rest)
@@ -567,16 +576,16 @@ parseExpression = parse_expression_prec 0
 
 parseIntLiteral :: Integer -> IntSuffix -> Either String (Expression ())
 parseIntLiteral n NoSuffix
-  | n < 1 `shiftL` 31 = Right (Constant intT n)
-  | n < 1 `shiftL` 63 = Right (Constant longIntT n)
+  | n < 1 `shiftL` 31 = Right (Constant intT (IntValue n))
+  | n < 1 `shiftL` 63 = Right (Constant longIntT (IntValue n))
   | otherwise = Left "Integer literal out of range"
 parseIntLiteral n LSuffix
-  | n < 1 `shiftL` 63 = Right (Constant longIntT n)
+  | n < 1 `shiftL` 63 = Right (Constant longIntT (IntValue n))
   | otherwise = Left "Integer literal out of range"
 parseIntLiteral n USuffix
-  | n < 1 `shiftL` 32 = Right (Constant uIntT n)
-  | n < 1 `shiftL` 64 = Right (Constant uLongIntT n)
+  | n < 1 `shiftL` 32 = Right (Constant uIntT (IntValue n))
+  | n < 1 `shiftL` 64 = Right (Constant uLongIntT (IntValue n))
   | otherwise = Left "Integer literal out of range"
 parseIntLiteral n LUSuffix
-  | n < 1 `shiftL` 64 = Right (Constant uLongIntT n)
+  | n < 1 `shiftL` 64 = Right (Constant uLongIntT (IntValue n))
   | otherwise = Left "Integer literal out of range"

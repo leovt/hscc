@@ -8,6 +8,7 @@ module CTypes
     uIntT,
     uLongIntT,
     funcT,
+    doubleT,
     IntegralType (..),
     Signed (..),
     IntSize (..),
@@ -33,6 +34,7 @@ data IntegralType = IType Signed IntSize
 
 data ArithmeticType
   = Integral IntegralType
+  | DoubleType
   deriving (Show, Eq)
 
 {- helper constructors -}
@@ -50,6 +52,9 @@ uLongIntT = ArithmeticType (Integral (IType Unsigned Long))
 
 funcT :: CType -> [CType] -> CType
 funcT = FuncT
+
+doubleT :: CType
+doubleT = ArithmeticType DoubleType
 
 commonType :: CType -> CType -> Maybe CType
 commonType (ArithmeticType t1@(Integral (IType s1 sz1))) (ArithmeticType t2@(Integral (IType s2 sz2)))

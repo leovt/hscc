@@ -11,7 +11,7 @@ import CTypes (ArithmeticType (..), CType (..), IntSize (..), IntegralType (..),
 import Control.Monad.State
 import Data.Bits (Bits (shiftL))
 import qualified Data.Map
-import Parser (BinaryOperator (..), UnaryOperator (..))
+import Parser (BinaryOperator (..), ConstValue (..), UnaryOperator (..))
 import qualified Parser as P
 import TAC (valueType)
 import qualified TAC as T
@@ -23,7 +23,7 @@ data Program
 
 data TopLevel
   = Function String Bool [Instruction]
-  | StaticVariable AsmType String Bool Integer
+  | StaticVariable AsmType String Bool ConstValue
   deriving (Show)
 
 data Instruction
@@ -276,7 +276,8 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateP
     translateBinary _ (CompoundAssignment _) = error "CompoundAssignment does not translate to a two operand form."
 
     translateValue :: T.Value -> Operand
-    translateValue (T.Constant _ c) = Imm c
+    translateValue (T.Constant _ (IntValue c)) = Imm c
+    translateValue (T.Constant _ _) = error "Only integer constants are supported as immediate values."
     translateValue (T.Variable t False name) = Pseudo (asmType t) name
     translateValue (T.Variable _ True name) = Memory $ Data name
 
@@ -435,7 +436,7 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     emitTopLevel (Function name global instructions) =
       let asmglobal = if global then [".globl " ++ name] else []
        in asmglobal ++ [name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ map emitInstruction instructions
-    emitTopLevel (StaticVariable t name global init) =
+    emitTopLevel (StaticVariable t name global (IntValue init)) =
       let asmglobal = if global then [".globl " ++ name] else []
           alignment = case t of
             Longword -> ".align 4"
@@ -444,7 +445,8 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
             Longword -> "    .long " ++ show (reduceImm Reg4 init)
             Quadword -> "    .quad " ++ show (reduceImm Reg8 init)
        in asmglobal ++ [".data", alignment, name ++ ":", dataDirective, ".text"]
-
+    emitTopLevel (StaticVariable _ _ _ (DoubleValue _)) =
+      error "Not yet implemented: Only integer constant values are supported for static variables."
     emitInstruction :: Instruction -> String
     emitInstruction ins@(TwoOp ShLeft t src dst) = "    " ++ twoOp ShLeft t ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand (regSize t) dst ++ comment ins
     emitInstruction ins@(TwoOp shift@(ShRight _) t src dst) = "    " ++ twoOp shift t ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand (regSize t) dst ++ comment ins
