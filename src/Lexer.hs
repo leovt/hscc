@@ -14,11 +14,13 @@ data IntSuffix = NoSuffix | LSuffix | USuffix | LUSuffix deriving (Show, Eq)
 
 data Token
   = TokInt Integer IntSuffix
+  | TokFloat Double
   | TokIdent String
   | TokKeyInt
   | TokKeyLong
   | TokKeySigned
   | TokKeyUnsigned
+  | TokKeyDouble
   | TokKeyVoid
   | TokKeyReturn
   | TokKeyGoto
@@ -105,8 +107,13 @@ enumerateSourcePositions = snd . mapAccumL step (1, 1)
 data LexerState
   = LS_Start
   | LS_Ident Position String
-  | LS_Integer Position Integer
-  | LS_IntSuffix Position Integer String
+  | LS_Integer Position String
+  | LS_IntSuffix Position String String
+  | LS_Decimal Position String
+  | LS_DecimalDigits Position String
+  | LS_Exponent Position String
+  | LS_ExponentSign Position String
+  | LS_ExponentDigits Position String
   | LS_Punctuation Position String
 
 lexer :: String -> Either String [LocatedToken]
@@ -116,38 +123,86 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
     step (state, Left x) _ = (state, Left x)
     step (LS_Start, Right tokens) (c, pos)
       | c `elem` whitespace = (LS_Start, Right tokens)
-      | c `elem` digits = (LS_Integer pos (read [c]), Right tokens)
+      | c `elem` digits = (LS_Integer pos [c], Right tokens)
+      | c == '.' = (LS_Decimal pos [c], Right tokens)
       | c `elem` id_start = (LS_Ident pos [c], Right tokens)
       | c `elem` punctuation = (LS_Punctuation pos [c], Right tokens)
-      | c == '(' = (LS_Start, Right ((TokOpenParen, Span pos pos) : tokens))
-      | c == ')' = (LS_Start, Right ((TokCloseParen, Span pos pos) : tokens))
-      | c == '{' = (LS_Start, Right ((TokOpenBrace, Span pos pos) : tokens))
-      | c == '}' = (LS_Start, Right ((TokCloseBrace, Span pos pos) : tokens))
-      | c == ';' = (LS_Start, Right ((TokSemicolon, Span pos pos) : tokens))
-      | otherwise = (LS_Start, Left ("Unexpected " ++ [c]))
+      | c == '(' = emitToken tokens (TokOpenParen, Span pos pos)
+      | c == ')' = emitToken tokens (TokCloseParen, Span pos pos)
+      | c == '{' = emitToken tokens (TokOpenBrace, Span pos pos)
+      | c == '}' = emitToken tokens (TokCloseBrace, Span pos pos)
+      | c == ';' = emitToken tokens (TokSemicolon, Span pos pos)
+      | otherwise = lexerError ("Unexpected " ++ [c])
     step (LS_Integer start n, Right tokens) (c, pos)
-      | c `elem` digits = (LS_Integer start (10 * n + read [c]), Right tokens)
+      | c `elem` digits = (LS_Integer start (n ++ [c]), Right tokens)
       | c `elem` int_suffix = (LS_IntSuffix start n [c], Right tokens)
-      | c `elem` id_continue = (LS_Integer start n, Left ("Unexpected in Integer " ++ [c]))
-      | otherwise = step (LS_Start, Right ((TokInt n NoSuffix, Span start pos) : tokens)) (c, pos)
+      | c == '.' = (LS_DecimalDigits start n, Right tokens)
+      | c == 'e' || c == 'E' = (LS_Exponent start (n ++ [c]), Right tokens)
+      | c `elem` id_continue = lexerError ("Unexpected in Integer " ++ [c])
+      | otherwise = emitTokenAndConsume tokens (TokInt (read n) NoSuffix, Span start pos) (c, pos)
     step (LS_IntSuffix start n suffix, Right tokens) (c, pos)
       | c `elem` int_suffix = (LS_IntSuffix start n (suffix ++ [c]), Right tokens)
+      | c == '.' = lexerError "Illegal '.' after integer suffix"
       | otherwise = case intSuffix suffix of
-          Left err -> (LS_Start, Left err)
-          Right s -> step (LS_Start, Right ((TokInt n s, Span start pos) : tokens)) (c, pos)
+          Left err -> lexerError err
+          Right s -> emitTokenAndConsume tokens (TokInt (read n) s, Span start pos) (c, pos)
+    step (LS_Decimal start part, Right tokens) (c, pos)
+      | c `elem` digits = (LS_DecimalDigits start (part ++ [c]), Right tokens)
+      | c == 'e' || c == 'E' = lexerError $ "No digits in mantissa, write `0.` or `.0` in `" ++ part ++ [c] ++ "`"
+      | c == '.' || c `elem` id_continue = lexerError ("Unexpected in Float " ++ [c])
+      | otherwise = emitTokenAndConsume tokens (floatToken part, Span start pos) (c, pos)
+    step (LS_DecimalDigits start part, Right tokens) (c, pos)
+      | c `elem` digits = (LS_DecimalDigits start (part ++ [c]), Right tokens)
+      | c == 'e' || c == 'E' = (LS_Exponent start (part ++ [c]), Right tokens)
+      | c == '.' || c `elem` id_continue = lexerError ("Unexpected in Float " ++ [c])
+      | otherwise = emitTokenAndConsume tokens (floatToken part, Span start pos) (c, pos)
+    step (LS_Exponent start part, Right tokens) (c, _)
+      | c `elem` digits = (LS_ExponentDigits start (part ++ [c]), Right tokens)
+      | c == '+' || c == '-' = (LS_ExponentSign start (part ++ [c]), Right tokens)
+      | otherwise = lexerError "expected digits in exponent"
+    step (LS_ExponentSign start part, Right tokens) (c, _)
+      | c `elem` digits = (LS_ExponentDigits start (part ++ [c]), Right tokens)
+      | otherwise = lexerError "expected digits in exponent"
+    step (LS_ExponentDigits start part, Right tokens) (c, pos)
+      | c `elem` digits = (LS_ExponentDigits start (part ++ [c]), Right tokens)
+      | c `elem` id_continue = lexerError ("Unexpected in Float " ++ [c])
+      | c == '.' = lexerError "Illegal '.' after float literal"
+      | otherwise = emitTokenAndConsume tokens (floatToken part, Span start pos) (c, pos)
     step (LS_Ident start ident, Right tokens) (c, pos)
       | c `elem` id_continue = (LS_Ident start (ident ++ [c]), Right tokens)
-      | otherwise = step (LS_Start, Right ((map_keyword ident, Span start pos) : tokens)) (c, pos)
+      | otherwise = emitTokenAndConsume tokens (map_keyword ident, Span start pos) (c, pos)
     step (LS_Punctuation start punct, Right tokens) (c, pos) = case punctuationToken (punct ++ [c]) of
       Just _ -> (LS_Punctuation start (punct ++ [c]), Right tokens)
       Nothing -> case punctuationToken punct of
-        Just token -> step (LS_Start, Right ((token, Span start pos) : tokens)) (c, pos)
-        Nothing -> (LS_Start, Left ("punctuationToken: unexpected punctuation: " ++ show punct))
+        Just token -> emitTokenAndConsume tokens (token, Span start pos) (c, pos)
+        Nothing -> lexerError ("punctuationToken: unexpected punctuation: " ++ show punct)
+
+    lexerError :: String -> (LexerState, Either String [LocatedToken])
+    lexerError msg = (LS_Start, Left msg)
+
+    emitToken :: [LocatedToken] -> LocatedToken -> (LexerState, Either String [LocatedToken])
+    emitToken tokens token = (LS_Start, Right (token : tokens))
+
+    {- HLINT ignore "Eta reduce" -}
+    {- this function emits a token and then calls step again with the same character in order to process it.
+       The character passed as the last argument is not part of the emitted token. -}
+    emitTokenAndConsume :: [LocatedToken] -> LocatedToken -> (Char, Position) -> (LexerState, Either String [LocatedToken])
+    emitTokenAndConsume tokens token locChar = step (emitToken tokens token) locChar
+
+    floatToken :: String -> Token
+    floatToken s = case reads (fix s) of
+      [(double, "")] -> TokFloat double
+      _ -> error $ "floatToken: DFA produced invalid literal `" ++ s ++ "`"
+      where
+        fix :: String -> String
+        fix s@('.' : _) = '0' : s
+        fix s = s
 
     map_keyword "int" = TokKeyInt
     map_keyword "long" = TokKeyLong
     map_keyword "signed" = TokKeySigned
     map_keyword "unsigned" = TokKeyUnsigned
+    map_keyword "double" = TokKeyDouble
     map_keyword "void" = TokKeyVoid
     map_keyword "return" = TokKeyReturn
     map_keyword "goto" = TokKeyGoto
