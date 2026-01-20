@@ -2,6 +2,7 @@ module CTypes
   ( CType (..),
     commonType,
     isIntegralType,
+    isScalarType,
     truncateIntegral,
     intT,
     longIntT,
@@ -68,11 +69,17 @@ commonType (ArithmeticType t1@(Integral (IType s1 sz1))) (ArithmeticType t2@(Int
         (Unsigned, Int, Signed, Int) -> Just uIntT
         (Signed, Int, Unsigned, Int) -> Just uIntT
         _ -> Nothing
+commonType (ArithmeticType DoubleType) (ArithmeticType _) = Just doubleT
+commonType (ArithmeticType _) (ArithmeticType DoubleType) = Just doubleT
 commonType _ _ = Nothing
 
 isIntegralType :: CType -> Bool
 isIntegralType (ArithmeticType (Integral _)) = True
 isIntegralType _ = False
+
+isScalarType :: CType -> Bool
+isScalarType (ArithmeticType _) = True
+isScalarType _ = False
 
 truncateIntegral :: IntegralType -> Integer -> Integer
 truncateIntegral (IType Signed Int) n = (n + (1 `shiftL` 31)) `mod` (1 `shiftL` 32) - (1 `shiftL` 31)

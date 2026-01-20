@@ -10,7 +10,7 @@ module Validate
   )
 where
 
-import CTypes (ArithmeticType (..), CType (..), IntegralType (..), commonType, intT, isIntegralType, truncateIntegral)
+import CTypes (ArithmeticType (..), CType (..), IntegralType (..), commonType, intT, isIntegralType, isScalarType, truncateIntegral)
 import Control.Monad (unless, when, zipWithM)
 import Control.Monad.Except
 import Control.Monad.State
@@ -610,10 +610,7 @@ typecheck program = do
       expr' <- tcExpression expr
       return (ExpressionStatement expr')
     tcStatement (IfStatement cond thenStmt maybeElseStmt) = do
-      cond' <- tcExpression cond
-      unless (isIntegralType (typeOf cond')) $
-        throwError $
-          "Condition expression must be integral, got " ++ show cond'
+      cond' <- tcCondition cond
       thenStmt' <- tcStatement thenStmt
       maybeElseStmt' <- mapM tcStatement maybeElseStmt
       return (IfStatement cond' thenStmt' maybeElseStmt')
@@ -637,40 +634,26 @@ typecheck program = do
       return (CompoundStatement block')
     tcStatement NullStatement = return NullStatement
     tcStatement (WhileStatement cond stmt) = do
-      cond' <- tcExpression cond
-      unless (isIntegralType (typeOf cond')) $
-        throwError $
-          "Condition expression must be integral, got " ++ show cond'
+      cond' <- tcCondition cond
       stmt' <- tcStatement stmt
       return (WhileStatement cond' stmt')
     tcStatement (DoWhileStatement cond stmt) = do
-      cond' <- tcExpression cond
-      unless (isIntegralType (typeOf cond')) $
-        throwError $
-          "Condition expression must be integral, got " ++ show cond'
+      cond' <- tcCondition cond
       stmt' <- tcStatement stmt
       return (DoWhileStatement cond' stmt')
     tcStatement (ForStatement maybeInit maybeCond maybeInc stmt) = do
-      maybeInit' <- case maybeInit of
-        Nothing -> return Nothing
-        Just (ForInitExpr expr) -> do
-          expr' <- tcExpression expr
-          return (Just (ForInitExpr expr'))
-        Just (ForInitDecl decl) -> do
-          decl' <- tcDeclaration decl
-          return (Just (ForInitDecl decl'))
-
-      maybeCond' <- case maybeCond of
-        Nothing -> return Nothing
-        Just cond -> do
-          cond' <- tcExpression cond
-          unless (isIntegralType (typeOf cond')) $
-            throwError $
-              "Condition expression must be integral, got " ++ show cond'
-          return (Just cond')
-      maybeInc' <- mapM tcExpression maybeInc
+      maybeInit' <- traverse tcForInit maybeInit
+      maybeCond' <- traverse tcCondition maybeCond
+      maybeInc' <- traverse tcExpression maybeInc
       stmt' <- tcStatement stmt
       return (ForStatement maybeInit' maybeCond' maybeInc' stmt')
+      where
+        tcForInit (ForInitExpr expr) = do
+          expr' <- tcExpression expr
+          return (ForInitExpr expr')
+        tcForInit (ForInitDecl decl) = do
+          decl' <- tcDeclaration decl
+          return (ForInitDecl decl')
     tcStatement BreakStatement = return BreakStatement
     tcStatement ContinueStatement = return ContinueStatement
     tcStatement (SwitchStatement expr stmt) = do
@@ -715,21 +698,29 @@ typecheck program = do
         Nothing -> throwError $ "tcExpression: Undeclared variable " ++ name
     tcExpression (Unary _ LogicNot expr) = do
       expr' <- tcExpression expr
+      requireScalar expr' "Logical not"
       return (Unary intT LogicNot expr')
     tcExpression (Unary _ op expr) = do
       expr' <- tcExpression expr
-      when (op == PreIncrement || op == PreDecrement || op == PostIncrement || op == PostDecrement) $
-        unless (isIntegralType (typeOf expr')) $
-          throwError $
-            "Increment/decrement operator applied to non-integral type: " ++ show expr'
+      case op of
+        PreIncrement -> requireScalar expr' "Pre-increment"
+        PreDecrement -> requireScalar expr' "Pre-decrement"
+        PostIncrement -> requireScalar expr' "Post-increment"
+        PostDecrement -> requireScalar expr' "Post-decrement"
+        Complement -> requireIntegral expr' "Bitwise complement"
+        _ -> return ()
       return (Unary (typeOf expr') op expr')
     tcExpression (Binary _ LogicAnd left right) = do
       left' <- tcExpression left
       right' <- tcExpression right
+      requireScalar left' "Logical and"
+      requireScalar right' "Logical and"
       return (Binary intT LogicAnd left' right')
     tcExpression (Binary _ LogicOr left right) = do
       left' <- tcExpression left
       right' <- tcExpression right
+      requireScalar left' "Logical or"
+      requireScalar right' "Logical or"
       return (Binary intT LogicOr left' right')
     tcExpression (Binary _ Assignment left right) = do
       left' <- tcExpression left
@@ -747,14 +738,14 @@ typecheck program = do
     tcExpression (Binary _ ShiftLeft left right) = do
       left' <- tcExpression left
       right' <- tcExpression right
-      unless (isIntegralType (typeOf left')) $ throwError $ "Left operand of shift must be integral, got " ++ show left'
-      unless (isIntegralType (typeOf right')) $ throwError $ "Right operand of shift must be integral, got " ++ show right'
+      requireIntegral left' "Bitshift"
+      requireIntegral right' "Bitshift"
       return (Binary (typeOf left') ShiftLeft left' right')
     tcExpression (Binary _ ShiftRight left right) = do
       left' <- tcExpression left
       right' <- tcExpression right
-      unless (isIntegralType (typeOf left')) $ throwError $ "Left operand of shift must be integral, got " ++ show left'
-      unless (isIntegralType (typeOf right')) $ throwError $ "Right operand of shift must be integral, got " ++ show right'
+      requireIntegral left' "Bitshift"
+      requireIntegral right' "Bitshift"
       return (Binary (typeOf left') ShiftRight left' right')
     tcExpression (Binary _ op left right) = do
       (commonT, left', right') <- makeCommonType left right
@@ -766,13 +757,16 @@ typecheck program = do
             LessOrEqual -> intT
             GreaterOrEqual -> intT
             _ -> commonT
+      case op of
+        Remainder -> requireIntegral left' "Remainder"
+        BitAnd -> requireIntegral left' "Bitwise and"
+        BitOr -> requireIntegral left' "Bitwise or"
+        BitXor -> requireIntegral left' "Bitwise xor"
+        _ -> return ()
       return (Binary t op left' right')
     tcExpression (Constant t c) = pure (Constant t c)
     tcExpression (Conditional _ cond trueExpr falseExpr) = do
-      cond' <- tcExpression cond
-      unless (isIntegralType (typeOf cond')) $
-        throwError $
-          "Condition expression must be integral, got " ++ show cond'
+      cond' <- tcCondition cond
       (commonT, true', false') <- makeCommonType trueExpr falseExpr
       return (Conditional commonT cond' true' false')
     tcExpression (FunctionCall _ name args) = do
@@ -801,15 +795,21 @@ typecheck program = do
       expr' <- tcExpression expr
       convertTo ctype expr'
 
+    tcCondition :: Expression () -> TypM (Expression CType)
+    tcCondition expr = do
+      cond <- tcExpression expr
+      if isScalarType (typeOf cond)
+        then pure cond
+        else throwError $ "Condition expression must be scalar (arithmetic or pointer), got " ++ show cond
+
     convertTo :: CType -> Expression CType -> TypM (Expression CType)
-    convertTo targetType expr
-      | exprType == targetType =
-          return expr
-      | isIntegralType (typeOf expr) && isIntegralType targetType =
-          return (Cast targetType expr)
-      | otherwise = throwError $ "Cannot convert type " ++ show (typeOf expr) ++ " to " ++ show targetType
+    convertTo targetType expr = go targetType (typeOf expr) expr
       where
-        exprType = typeOf expr
+        go :: CType -> CType -> Expression CType -> TypM (Expression CType)
+        go targetT@(ArithmeticType _) sourceT@(ArithmeticType _) expr
+          | sourceT == targetT = return expr
+          | otherwise = return (Cast targetT expr)
+        go targetT sourceT _ = throwError $ "Cannot convert type " ++ show sourceT ++ " to " ++ show targetT
 
     makeCommonType :: Expression () -> Expression () -> TypM (CType, Expression CType, Expression CType)
     makeCommonType left right = do
@@ -829,6 +829,18 @@ typecheck program = do
                 ++ show (typeOf left)
                 ++ " and "
                 ++ show (typeOf right)
+
+    requireScalar :: Expression CType -> String -> TypM ()
+    requireScalar expr context = do
+      unless (isScalarType (typeOf expr)) $
+        throwError $
+          context ++ " operator requires scalar type, got " ++ show expr
+
+    requireIntegral :: Expression CType -> String -> TypM ()
+    requireIntegral expr context = do
+      unless (isIntegralType (typeOf expr)) $
+        throwError $
+          context ++ " operator requires integral type, got " ++ show expr
 
 zero :: CType -> ConstValue
 zero (ArithmeticType (Integral _)) = IntValue 0
