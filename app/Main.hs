@@ -86,4 +86,4 @@ main = do
   callProcess "gcc" $
     if noLink options
       then [asmoutput, "-c", "-o", objectfile]
-      else [asmoutput, "-o", executable]
+      else [asmoutput, "-o", executable] ++ ["-l" ++ lib | lib <- libraries options]

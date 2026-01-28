@@ -10,7 +10,8 @@ data Options = Options
     validateOnly :: Bool,
     tackyOnly :: Bool,
     codegenOnly :: Bool,
-    noLink :: Bool
+    noLink :: Bool,
+    libraries :: [String]
   }
   deriving (Show)
 
@@ -52,6 +53,13 @@ optionsParser =
     <*> switch
       ( short 'c'
           <> help "Compile and assemble, but do not link."
+      )
+    <*> many
+      ( strOption
+          ( short 'l'
+              <> metavar "LIB"
+              <> help "Link library"
+          )
       )
 
 getOptions :: IO Options
