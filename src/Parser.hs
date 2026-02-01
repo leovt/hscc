@@ -100,7 +100,7 @@ data Statement t
 data ConstValue
   = IntValue Integer
   | DoubleValue Double
-  deriving (Eq, Show)
+  deriving (Eq, Show, Ord)
 
 data Expression t
   = Constant CType ConstValue

@@ -7,10 +7,13 @@ module AsmAst
   )
 where
 
-import CTypes (ArithmeticType (..), CType (..), IntSize (..), IntegralType (..), Signed (..), intT)
+import CTypes (ArithmeticType (..), CType (..), IntSize (..), IntegralType (..), Signed (..), intT, isIntegralType)
 import Control.Monad.State
 import Data.Bits (Bits (shiftL))
 import qualified Data.Map
+import Data.Word (Word32, Word64)
+import GHC.Float (castDoubleToWord64)
+import Numeric (showHex)
 import Parser (BinaryOperator (..), ConstValue (..), UnaryOperator (..))
 import qualified Parser as P
 import TAC (valueType)
@@ -21,9 +24,15 @@ data Program
   = Program [TopLevel]
   deriving (Show)
 
+data ConstantBits
+  = Bits32 Word32
+  | Bits64 Word64
+  deriving (Show)
+
 data TopLevel
   = Function String Bool [Instruction]
-  | StaticVariable AsmType String Bool ConstValue
+  | StaticVariable AsmType String Bool ConstantBits
+  | StaticConstant AsmType String ConstantBits
   deriving (Show)
 
 data Instruction
@@ -55,6 +64,7 @@ data TwoOperandInstruction
   | Sub
   | Cmp
   | Mul
+  | DivDbl
   | And
   | Or
   | Xor
@@ -71,7 +81,7 @@ data MemoryOperand
   deriving (Show, Eq, Ord)
 
 data Operand
-  = Imm Integer
+  = Imm ConstValue
   | Register Reg
   | Pseudo AsmType String
   | Memory MemoryOperand
@@ -94,26 +104,39 @@ data Reg
   | R9
   | R10
   | R11
+  | XMM0
+  | XMM1
+  | XMM2
+  | XMM3
+  | XMM4
+  | XMM5
+  | XMM6
+  | XMM7
+  | XMM14
+  | XMM15
   deriving (Show, Eq, Ord)
 
 data RegSize
   = Reg1
   | Reg4
   | Reg8
+  | XMM
 
 data AsmType
   = Longword
   | Quadword
+  | Double
   deriving (Show, Eq, Ord)
 
 asmType :: CType -> AsmType
 asmType (ArithmeticType (Integral (IType _ Int))) = Longword
 asmType (ArithmeticType (Integral (IType _ Long))) = Quadword
+asmType (ArithmeticType DoubleType) = Double
 asmType _ = error "Unsupported CType for AsmType."
 
 asmSign :: CType -> Signed
 asmSign (ArithmeticType (Integral (IType s _))) = s
-asmSign _ = error "Unsupported CType for asmSign."
+asmSign _ = Signed
 
 asmValueType :: T.Value -> AsmType
 asmValueType = asmType . valueType
@@ -121,14 +144,14 @@ asmValueType = asmType . valueType
 asmValueSign :: T.Value -> Signed
 asmValueSign = asmSign . valueType
 
-translateTACtoASM :: T.Program -> Program
-translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateProgram
+translateTACtoASM :: Int -> T.Program -> Program
+translateTACtoASM nextID = fixImmediates nextID . fixInstructions . replacePseudo . translateProgram
   where
     translateProgram :: T.Program -> Program
-    translateProgram (T.Program functions) = Program (map translateFunction functions)
+    translateProgram (T.Program functions) = Program (map translateTopLevel functions)
 
-    translateFunction :: T.TopLevel -> TopLevel
-    translateFunction (T.Function name global params stmts) = Function name global instructions
+    translateTopLevel :: T.TopLevel -> TopLevel
+    translateTopLevel (T.Function name global params stmts) = Function name global instructions
       where
         instructions =
           copyRegisterParameters
@@ -151,35 +174,55 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateP
 
         body_instructions = concatMap translateInstruction stmts
         cleanupStack = []
-    translateFunction (T.StaticVariable t name global init) = StaticVariable (asmType t) name global init
+    translateTopLevel (T.StaticVariable t name global (IntValue init)) = StaticVariable (asmType t) name global init'
+      where
+        init' = case asmType t of
+          Quadword -> Bits64 $ fromIntegral init
+          Longword -> Bits32 $ fromIntegral init
+          Double -> Bits64 (castDoubleToWord64 (fromIntegral init))
+    translateTopLevel (T.StaticVariable t name global (DoubleValue init)) = StaticVariable (asmType t) name global init'
+      where
+        init' = case asmType t of
+          Quadword -> Bits64 (truncate init)
+          Longword -> Bits32 (truncate init)
+          Double -> Bits64 (castDoubleToWord64 init)
 
     translateInstruction :: T.Instruction -> [Instruction]
     translateInstruction (T.Return value) =
-      [ TwoOp Mov (asmValueType value) (translateValue value) (Register AX),
+      [ TwoOp Mov (asmValueType value) (translateValue value) (Register (returnRegister (asmValueType value))),
         Ret
       ]
+      where
+        returnRegister Double = XMM0
+        returnRegister Longword = AX
+        returnRegister Quadword = AX
     translateInstruction (T.Unary LogicNot src dst) =
-      [ TwoOp Cmp (asmValueType src) (Imm 0) (translateValue src),
-        TwoOp Mov (asmType intT) (Imm 0) (translateValue dst),
+      [ TwoOp Cmp (asmValueType src) (Imm (IntValue 0)) (translateValue src),
+        TwoOp Mov (asmType intT) (Imm (IntValue 0)) (translateValue dst),
         SetCC E (translateValue dst)
       ]
     translateInstruction (T.Unary op src dst) =
       [ TwoOp Mov (asmValueType src) (translateValue src) (translateValue dst),
         OneOp (translateUnary op) (asmValueType src) (translateValue dst)
       ]
-    translateInstruction (T.Binary Divide left right dst) =
-      [ TwoOp Mov (asmValueType left) (translateValue left) (Register AX),
-        case asmValueSign left of
-          Signed -> Cdq (asmValueType left)
-          Unsigned -> TwoOp Mov (asmValueType left) (Imm 0) (Register DX),
-        OneOp (Div (asmValueSign right)) (asmValueType right) (translateValue right),
-        TwoOp Mov (asmValueType left) (Register AX) (translateValue dst)
-      ]
+    translateInstruction (T.Binary Divide left right dst)
+      | isIntegralType (valueType left) =
+          [ TwoOp Mov (asmValueType left) (translateValue left) (Register AX),
+            case asmValueSign left of
+              Signed -> Cdq (asmValueType left)
+              Unsigned -> TwoOp Mov (asmValueType left) (Imm (IntValue 0)) (Register DX),
+            OneOp (Div (asmValueSign right)) (asmValueType right) (translateValue right),
+            TwoOp Mov (asmValueType left) (Register AX) (translateValue dst)
+          ]
+      | otherwise =
+          [ TwoOp Mov (asmValueType dst) (translateValue left) (translateValue dst),
+            TwoOp DivDbl (asmValueType dst) (translateValue right) (translateValue dst)
+          ]
     translateInstruction (T.Binary Remainder left right dst) =
       [ TwoOp Mov (asmValueType left) (translateValue left) (Register AX),
         case asmValueSign left of
           Signed -> Cdq (asmValueType left)
-          Unsigned -> TwoOp Mov (asmValueType left) (Imm 0) (Register DX),
+          Unsigned -> TwoOp Mov (asmValueType left) (Imm (IntValue 0)) (Register DX),
         OneOp (Div (asmValueSign right)) (asmValueType right) (translateValue right),
         TwoOp Mov (asmValueType left) (Register DX) (translateValue dst)
       ]
@@ -192,7 +235,7 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateP
         Relational condition ->
           let dest = translateValue dst
            in [ TwoOp Cmp (asmValueType right) (translateValue right) (translateValue left),
-                TwoOp Mov (asmType intT) (Imm 0) dest,
+                TwoOp Mov (asmType intT) (Imm (IntValue 0)) dest,
                 SetCC condition dest
               ]
     translateInstruction (T.Copy src dst) =
@@ -201,11 +244,11 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateP
     translateInstruction (T.Jump label) = [Jmp label]
     translateInstruction (T.Label label) = [Label label]
     translateInstruction (T.JumpIfZero label value) =
-      [ TwoOp Cmp (asmValueType value) (Imm 0) (translateValue value),
+      [ TwoOp Cmp (asmValueType value) (Imm (IntValue 0)) (translateValue value),
         JmpCC E label
       ]
     translateInstruction (T.JumpIfNotZero label value) =
-      [ TwoOp Cmp (asmValueType value) (Imm 0) (translateValue value),
+      [ TwoOp Cmp (asmValueType value) (Imm (IntValue 0)) (translateValue value),
         JmpCC NE label
       ]
     translateInstruction (T.FunctionCall name args value) =
@@ -239,6 +282,12 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateP
     translateInstruction (T.SignExtend src dst) = [MovSX (translateValue src) (translateValue dst)]
     translateInstruction (T.ZeroExtend src dst) = [MovZX (translateValue src) (translateValue dst)]
     translateInstruction (T.Truncate src dst) = [TwoOp Mov Longword (translateValue src) (translateValue dst)]
+    translateInstruction (T.DoubleToInt src dst) = [Cvttsd2si (asmValueType dst) (translateValue src) (translateValue dst)]
+    translateInstruction (T.DoubleToUInt src dst)
+      | asmValueType dst == Quadword = []
+      | otherwise = []
+    translateInstruction (T.IntToDouble src dst) = [Cvtsi2sd (asmValueType src)]
+    translateInstruction (T.UIntToDouble src dst) = []
 
     translateUnary :: UnaryOperator -> OneOperandInstruction
     translateUnary Complement = Not
@@ -276,8 +325,7 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . translateP
     translateBinary _ (CompoundAssignment _) = error "CompoundAssignment does not translate to a two operand form."
 
     translateValue :: T.Value -> Operand
-    translateValue (T.Constant _ (IntValue c)) = Imm c
-    translateValue (T.Constant _ _) = error "Only integer constants are supported as immediate values."
+    translateValue (T.Constant _ c) = Imm c
     translateValue (T.Variable t False name) = Pseudo (asmType t) name
     translateValue (T.Variable _ True name) = Memory $ Data name
 
@@ -301,6 +349,7 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
           let sz = case t of
                 Longword -> 4
                 Quadword -> 8
+                Double -> 8
               n = (stackSize state + sz + sz - 1) `div` sz * sz -- align to sz
           let new = Memory $ Stack (-n) name
           put TransState {stackSize = n, pseudoMap = Data.Map.insert operand new (pseudoMap state)}
@@ -402,28 +451,55 @@ fixInstructions (Program fun) = Program (map fixInstructionsFun fun)
       ]
     fixInstr ins = [ins]
 
-fixImmediates :: Program -> Program
-fixImmediates (Program p) = Program (map fixImmediatesTop p)
-  where
-    fixImmediatesTop :: TopLevel -> TopLevel
-    fixImmediatesTop (Function name global instructions) = Function name global (concatMap fixInstr instructions)
-    fixImmediatesTop other = other
+data FixImmState = FixImmState
+  { nextID :: Int,
+    constLabels :: Data.Map.Map ConstantBits String
+  }
 
-    fixInstr :: Instruction -> [Instruction]
-    fixInstr ins@(TwoOp Mov Quadword _ (Register _)) = [ins]
-    fixInstr ins@(TwoOp op Quadword src@(Imm n) dst)
-      | fitsImm32Signed n = [ins]
+type FixImmM a = State FixImmState a -- the translation monad encapsulating the translation state
+
+newId :: String -> FixImmM String
+newId prefix = do
+  state <- get
+  let n = nextID state
+  put state {nextID = n + 1}
+  return $ prefix ++ "." ++ show n
+
+fixImmediates :: Int -> Program -> Program
+fixImmediates nextID program = evalState (fixImmProg program) (FixImmState {nextID = nextID, constLabels = Data.Map.empty})
+  where
+    fixImmProg :: Program -> FixImmM Program
+    fixImmProg (Program tops) = do
+      tops' <- mapM fixImmediatesTop tops
+      state <- get
+      return $ Program (tops' ++ createStaticConst (constLabels state))
+
+    createStaticConst :: Data.Map.Map ConstantBits String -> [TopLevel]
+    createStaticConst _ = []
+
+    fixImmediatesTop :: TopLevel -> FixImmM TopLevel
+    fixImmediatesTop (Function name global instructions) = do
+      instructions' <- mapM fixInstr instructions
+      return $ Function name global (concat instructions')
+    fixImmediatesTop other = pure other
+
+    fixInstr :: Instruction -> FixImmM [Instruction]
+    fixInstr ins@(TwoOp Mov Quadword _ (Register _)) = pure [ins]
+    fixInstr ins@(TwoOp op Quadword src@(Imm (IntValue n)) dst)
+      | fitsImm32Signed n = pure [ins]
       | otherwise =
-          [ TwoOp Mov Quadword src (Register R10),
-            TwoOp op Quadword (Register R10) dst
-          ]
-    fixInstr ins@(Push src@(Imm n))
-      | fitsImm32Signed n = [ins]
+          pure
+            [ TwoOp Mov Quadword src (Register R10),
+              TwoOp op Quadword (Register R10) dst
+            ]
+    fixInstr ins@(Push src@(Imm (IntValue n)))
+      | fitsImm32Signed n = return [ins]
       | otherwise =
-          [ TwoOp Mov Quadword src (Register R10),
-            Push (Register R10)
-          ]
-    fixInstr ins = [ins]
+          return
+            [ TwoOp Mov Quadword src (Register R10),
+              Push (Register R10)
+            ]
+    fixInstr ins = return [ins]
 
     fitsImm32Signed :: Integer -> Bool
     fitsImm32Signed n =
@@ -434,19 +510,26 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
   where
     emitTopLevel :: TopLevel -> [String]
     emitTopLevel (Function name global instructions) =
-      let asmglobal = if global then [".globl " ++ name] else []
-       in asmglobal ++ [name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ map emitInstruction instructions
-    emitTopLevel (StaticVariable t name global (IntValue init)) =
-      let asmglobal = if global then [".globl " ++ name] else []
-          alignment = case t of
-            Longword -> ".align 4"
-            Quadword -> ".align 8"
-          dataDirective = case t of
-            Longword -> "    .long " ++ show (reduceImm Reg4 init)
-            Quadword -> "    .quad " ++ show (reduceImm Reg8 init)
-       in asmglobal ++ [".data", alignment, name ++ ":", dataDirective, ".text"]
-    emitTopLevel (StaticVariable _ _ _ (DoubleValue _)) =
-      error "Not yet implemented: Only integer constant values are supported for static variables."
+      asmglobal global name ++ [name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ map emitInstruction instructions
+    emitTopLevel (StaticVariable t name global init) =
+      asmglobal global name ++ [".data", alignmentOf t, name ++ ":", emitStaticData t init, ".text"]
+    emitTopLevel (StaticConstant t name init) =
+      [".rodata", alignmentOf t, name ++ ":", emitStaticData t init]
+
+    asmglobal :: Bool -> String -> [String]
+    asmglobal global name = if global then [".globl " ++ name] else []
+
+    alignmentOf :: AsmType -> String
+    alignmentOf Longword = ".align 4"
+    alignmentOf Quadword = ".align 8"
+    alignmentOf Double = ".align 8"
+
+    emitStaticData :: AsmType -> ConstantBits -> String
+    emitStaticData Longword (Bits32 x) = "    .long 0x" ++ showHex x ""
+    emitStaticData Quadword (Bits64 x) = "    .quad 0x" ++ showHex x ""
+    emitStaticData Double (Bits64 x) = "    .quad 0x" ++ showHex x ""
+    emitStaticData _ _ = error "Type mismatch between static variable and its initializer."
+
     emitInstruction :: Instruction -> String
     emitInstruction ins@(TwoOp ShLeft t src dst) = "    " ++ twoOp ShLeft t ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand (regSize t) dst ++ comment ins
     emitInstruction ins@(TwoOp shift@(ShRight _) t src dst) = "    " ++ twoOp shift t ++ " " ++ emitOperand Reg1 src ++ ", " ++ emitOperand (regSize t) dst ++ comment ins
@@ -457,6 +540,7 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     emitInstruction Ret = "    movq %rbp, %rsp\n    popq %rbp\n    ret"
     emitInstruction (Cdq Longword) = "    cdq"
     emitInstruction (Cdq Quadword) = "    cqo"
+    emitInstruction (Cdq _) = error "Internal Error: Cdq for non-integer type"
     emitInstruction (Jmp label) = "    jmp " ++ label
     emitInstruction (Label label) = label ++ ":"
     emitInstruction (JmpCC condition label) = "    j" ++ cond condition ++ " " ++ label
@@ -482,6 +566,7 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     twoOp AsmAst.Add t = "add" ++ typeSuffix t
     twoOp Sub t = "sub" ++ typeSuffix t
     twoOp Mul t = "imul" ++ typeSuffix t
+    twoOp DivDbl t = "div" ++ typeSuffix t
     twoOp And t = "and" ++ typeSuffix t
     twoOp Or t = "or" ++ typeSuffix t
     twoOp Xor t = "xor" ++ typeSuffix t
@@ -511,10 +596,12 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     typeSuffix :: AsmType -> String
     typeSuffix Longword = "l"
     typeSuffix Quadword = "q"
+    typeSuffix Double = "sd"
 
     regSize :: AsmType -> RegSize
     regSize Longword = Reg4
     regSize Quadword = Reg8
+    regSize Double = XMM
 
     emitOperand :: RegSize -> Operand -> String
     emitOperand sz (Imm n) = "$" ++ show (reduceImm sz n)
@@ -557,8 +644,21 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     emitOperand Reg8 (Register R9) = "%r9"
     emitOperand Reg8 (Register R10) = "%r10"
     emitOperand Reg8 (Register R11) = "%r11"
+    emitOperand XMM (Register XMM0) = "%xmm0"
+    emitOperand XMM (Register XMM1) = "%xmm1"
+    emitOperand XMM (Register XMM2) = "%xmm2"
+    emitOperand XMM (Register XMM3) = "%xmm3"
+    emitOperand XMM (Register XMM4) = "%xmm4"
+    emitOperand XMM (Register XMM5) = "%xmm5"
+    emitOperand XMM (Register XMM6) = "%xmm6"
+    emitOperand XMM (Register XMM7) = "%xmm7"
+    emitOperand XMM (Register XMM14) = "%xmm14"
+    emitOperand XMM (Register XMM15) = "%xmm15"
+    emitOperand _ _ = error "Internal Error: Invalid Register-Size combination"
 
-    reduceImm :: RegSize -> Integer -> Integer
-    reduceImm Reg1 n = n `mod` 256
-    reduceImm Reg4 n = (n + (1 `shiftL` 31)) `mod` (1 `shiftL` 32) - (1 `shiftL` 31)
-    reduceImm Reg8 n = n
+    reduceImm :: RegSize -> ConstValue -> Integer
+    reduceImm Reg1 (IntValue n) = n `mod` 256
+    reduceImm Reg4 (IntValue n) = (n + (1 `shiftL` 31)) `mod` (1 `shiftL` 32) - (1 `shiftL` 31)
+    reduceImm Reg8 (IntValue n) = n
+    reduceImm _ (DoubleValue _) = error "Internal Error: double valued immediate can not be emitted"
+    reduceImm XMM _ = error "Internal Error: use XMM for integers"

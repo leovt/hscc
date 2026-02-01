@@ -52,6 +52,10 @@ data Instruction
   | SignExtend Value Value
   | ZeroExtend Value Value
   | Truncate Value Value
+  | DoubleToInt Value Value
+  | IntToDouble Value Value
+  | DoubleToUInt Value Value
+  | UIntToDouble Value Value
   deriving (Show)
 
 data Value
@@ -79,9 +83,10 @@ newId prefix = do
   put state {nextID = n + 1}
   return $ prefix ++ "." ++ show n
 
-translate :: P.TypedProgram -> SymbolTable -> Int -> Program
-translate program (SymbolTable symtab) nextID' = evalState (translateProgram program) initState
+translate :: P.TypedProgram -> SymbolTable -> Int -> (Program, Int)
+translate program (SymbolTable symtab) nextID' = (prog, nextID state)
   where
+    (prog, state) = runState (translateProgram program) initState
     initState =
       TransState
         { nextID = nextID',
@@ -458,5 +463,13 @@ translate program (SymbolTable symtab) nextID' = evalState (translateProgram pro
                   | a == Int && s == Signed -> SignExtend value destination
                   | a == Int && s == Unsigned -> ZeroExtend value destination
                   | otherwise -> Truncate value destination
+                (ArithmeticType (Integral (IType Signed _)), ArithmeticType DoubleType) ->
+                  IntToDouble value destination
+                (ArithmeticType (Integral (IType Unsigned _)), ArithmeticType DoubleType) ->
+                  UIntToDouble value destination
+                (ArithmeticType DoubleType, ArithmeticType (Integral (IType Signed _))) ->
+                  DoubleToInt value destination
+                (ArithmeticType DoubleType, ArithmeticType (Integral (IType Unsigned _))) ->
+                  DoubleToUInt value destination
                 _ -> error "Unsupported cast."
           return (instructions ++ [cast_instruction], destination)
