@@ -148,100 +148,113 @@ asmValueType = asmType . valueType
 asmValueSign :: T.Value -> Signed
 asmValueSign = asmSign . valueType
 
-translateTACtoASM :: T.Program -> Program
-translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . fixDoubleImmediates . translateProgram
+type UniqueIdM a = State Int a
+
+translateTACtoASM :: Int -> T.Program -> Program
+translateTACtoASM n = fixImmediates . fixInstructions . replacePseudo . fixDoubleImmediates . translateProgram n
   where
-    translateProgram :: T.Program -> Program
-    translateProgram (T.Program functions) = Program (map translateTopLevel functions)
+    translateProgram :: Int -> T.Program -> Program
+    translateProgram n p = evalState (translateProgram2 p) n
 
-    translateTopLevel :: T.TopLevel -> TopLevel
-    translateTopLevel (T.Function name global params stmts) = Function name global instructions
-      where
-        instructions =
-          copyRegisterParameters
-            ++ copyStackParameters
-            ++ body_instructions
-            ++ cleanupStack
+    uqName :: String -> UniqueIdM String
+    uqName name = do
+      n <- get
+      modify (+ 1)
+      return $ name ++ "." ++ show n
 
-        argRegisters :: [Reg]
-        argRegisters = [DI, SI, DX, CX, R8, R9]
-        (registerArgs, stackArgs) = splitAt (length argRegisters) params
-        copyRegisterParameters = zipWith movarg registerArgs argRegisters
-        copyStackParameters = zipWith movstk stackArgs [16, 24 ..]
+    translateProgram2 :: T.Program -> UniqueIdM Program
+    translateProgram2 (T.Program functions) = do
+      translated <- mapM translateTopLevel functions
+      return $ Program translated
 
-        movarg :: T.Value -> Reg -> Instruction
-        movarg arg reg = TwoOp Mov (asmValueType arg) (Register reg) (translateValue arg)
+    translateTopLevel :: T.TopLevel -> UniqueIdM TopLevel
+    translateTopLevel (T.Function name global params stmts) =
+      do
+        let (intRegArgs, dblRegArgs, stackArgs) = splitArgs params
+            copyIntRegisterParameters = zipWith movarg intRegArgs intRegisters
+            copyDoubleRegisterParameters = zipWith movarg dblRegArgs dblRegisters
+            copyStackParameters = zipWith movstk stackArgs [16, 24 ..]
 
-        movstk :: T.Value -> Int -> Instruction
-        movstk arg@(T.Variable _ _ name) offset = TwoOp Mov (asmValueType arg) (Memory $ Stack offset name) (translateValue arg)
-        movstk _ _ = error "Parameters must be variables."
+            movarg :: T.Value -> Reg -> Instruction
+            movarg arg reg = TwoOp Mov (asmValueType arg) (Register reg) (translateValue arg)
 
-        body_instructions = concatMap translateInstruction stmts
-        cleanupStack = []
-    translateTopLevel (T.StaticVariable t name global (IntValue init)) = StaticVariable (asmType t) name global init'
+            movstk :: T.Value -> Int -> Instruction
+            movstk arg@(T.Variable _ _ name) offset = TwoOp Mov (asmValueType arg) (Memory $ Stack offset name) (translateValue arg)
+            movstk _ _ = error "Parameters must be variables."
+            cleanupStack = []
+        body_instructions <- mapM translateInstruction stmts
+        return $
+          Function
+            name
+            global
+            ( copyIntRegisterParameters
+                ++ copyDoubleRegisterParameters
+                ++ copyStackParameters
+                ++ concat body_instructions
+                ++ cleanupStack
+            )
+    translateTopLevel (T.StaticVariable t name global (IntValue init)) = pure $ StaticVariable (asmType t) name global init'
       where
         init' = case asmType t of
           Quadword -> Bits64 $ fromIntegral init
           Longword -> Bits32 $ fromIntegral init
           Double -> Bits64 (castDoubleToWord64 (fromIntegral init))
-    translateTopLevel (T.StaticVariable t name global (DoubleValue init)) = StaticVariable (asmType t) name global init'
+    translateTopLevel (T.StaticVariable t name global (DoubleValue init)) = pure $ StaticVariable (asmType t) name global init'
       where
         init' = case asmType t of
           Quadword -> Bits64 (truncate init)
           Longword -> Bits32 (truncate init)
           Double -> Bits64 (castDoubleToWord64 init)
 
-    translateInstruction :: T.Instruction -> [Instruction]
+    translateInstruction :: T.Instruction -> UniqueIdM [Instruction]
     translateInstruction (T.Return value) =
-      [ TwoOp Mov (asmValueType value) (translateValue value) (Register (returnRegister (asmValueType value))),
-        Ret
-      ]
-      where
-        returnRegister Double = XMM0
-        returnRegister Longword = AX
-        returnRegister Quadword = AX
+      pure
+        [ TwoOp Mov (asmValueType value) (translateValue value) (returnRegister (asmValueType value)),
+          Ret
+        ]
     translateInstruction (T.Unary LogicNot src dst) =
-      [ TwoOp Cmp (asmValueType src) (zero (asmValueType src)) (translateValue src),
-        TwoOp Mov (asmType intT) (Imm (IntValue 0)) (translateValue dst),
-        SetCC E (translateValue dst)
-      ]
-      where
-        zero :: AsmType -> Operand
-        zero Longword = Imm (IntValue 0)
-        zero Quadword = Imm (IntValue 0)
-        zero Double = Imm (DoubleValue 0)
+      pure
+        [ TwoOp Cmp (asmValueType src) (zero (asmValueType src)) (translateValue src),
+          TwoOp Mov (asmType intT) (Imm (IntValue 0)) (translateValue dst),
+          SetCC E (translateValue dst)
+        ]
     translateInstruction (T.Unary op src dst)
       | op == Negate && valueType src == ArithmeticType DoubleType =
-          [ TwoOp Mov (asmValueType dst) (Imm (DoubleValue 0.0)) (translateValue dst),
-            TwoOp Sub (asmValueType dst) (translateValue src) (translateValue dst)
-          ]
+          pure
+            [ TwoOp Mov (asmValueType dst) (Imm (DoubleValue 0.0)) (translateValue dst),
+              TwoOp Sub (asmValueType dst) (translateValue src) (translateValue dst)
+            ]
       | otherwise =
-          [ TwoOp Mov (asmValueType src) (translateValue src) (translateValue dst),
-            OneOp (translateUnary op) (asmValueType src) (translateValue dst)
-          ]
+          pure
+            [ TwoOp Mov (asmValueType src) (translateValue src) (translateValue dst),
+              OneOp (translateUnary op) (asmValueType src) (translateValue dst)
+            ]
     translateInstruction (T.Binary Divide left right dst)
       | isIntegralType (valueType left) =
-          [ TwoOp Mov (asmValueType left) (translateValue left) (Register AX),
-            case asmValueSign left of
-              Signed -> Cdq (asmValueType left)
-              Unsigned -> TwoOp Mov (asmValueType left) (Imm (IntValue 0)) (Register DX),
-            OneOp (Div (asmValueSign right)) (asmValueType right) (translateValue right),
-            TwoOp Mov (asmValueType left) (Register AX) (translateValue dst)
-          ]
+          pure
+            [ TwoOp Mov (asmValueType left) (translateValue left) (Register AX),
+              case asmValueSign left of
+                Signed -> Cdq (asmValueType left)
+                Unsigned -> TwoOp Mov (asmValueType left) (Imm (IntValue 0)) (Register DX),
+              OneOp (Div (asmValueSign right)) (asmValueType right) (translateValue right),
+              TwoOp Mov (asmValueType left) (Register AX) (translateValue dst)
+            ]
       | otherwise =
-          [ TwoOp Mov (asmValueType dst) (translateValue left) (translateValue dst),
-            TwoOp DivDbl (asmValueType dst) (translateValue right) (translateValue dst)
-          ]
+          pure
+            [ TwoOp Mov (asmValueType dst) (translateValue left) (translateValue dst),
+              TwoOp DivDbl (asmValueType dst) (translateValue right) (translateValue dst)
+            ]
     translateInstruction (T.Binary Remainder left right dst) =
-      [ TwoOp Mov (asmValueType left) (translateValue left) (Register AX),
-        case asmValueSign left of
-          Signed -> Cdq (asmValueType left)
-          Unsigned -> TwoOp Mov (asmValueType left) (Imm (IntValue 0)) (Register DX),
-        OneOp (Div (asmValueSign right)) (asmValueType right) (translateValue right),
-        TwoOp Mov (asmValueType left) (Register DX) (translateValue dst)
-      ]
+      pure
+        [ TwoOp Mov (asmValueType left) (translateValue left) (Register AX),
+          case asmValueSign left of
+            Signed -> Cdq (asmValueType left)
+            Unsigned -> TwoOp Mov (asmValueType left) (Imm (IntValue 0)) (Register DX),
+          OneOp (Div (asmValueSign right)) (asmValueType right) (translateValue right),
+          TwoOp Mov (asmValueType left) (Register DX) (translateValue dst)
+        ]
     translateInstruction (T.Binary op left right dst) =
-      case translateBinary (asmValueSign left) op of
+      pure $ case translateBinary (asmValueSign left) op of
         Arithmetic instruction ->
           [ TwoOp Mov (asmValueType dst) (translateValue left) (translateValue dst),
             TwoOp instruction (asmValueType dst) (translateValue right) (translateValue dst)
@@ -253,56 +266,88 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . fixDoubleI
                 SetCC condition dest
               ]
     translateInstruction (T.Copy src dst) =
-      [ TwoOp Mov (asmValueType src) (translateValue src) (translateValue dst)
-      ]
-    translateInstruction (T.Jump label) = [Jmp label]
-    translateInstruction (T.Label label) = [Label label]
+      pure
+        [ TwoOp Mov (asmValueType src) (translateValue src) (translateValue dst)
+        ]
+    translateInstruction (T.Jump label) = pure [Jmp label]
+    translateInstruction (T.Label label) = pure [Label label]
     translateInstruction (T.JumpIfZero label value) =
-      [ TwoOp Cmp (asmValueType value) (Imm (IntValue 0)) (translateValue value),
-        JmpCC E label
-      ]
+      pure
+        [ TwoOp Cmp (asmValueType value) (zero (asmValueType value)) (translateValue value),
+          JmpCC E label
+        ]
     translateInstruction (T.JumpIfNotZero label value) =
-      [ TwoOp Cmp (asmValueType value) (Imm (IntValue 0)) (translateValue value),
-        JmpCC NE label
-      ]
+      pure
+        [ TwoOp Cmp (asmValueType value) (zero (asmValueType value)) (translateValue value),
+          JmpCC NE label
+        ]
     translateInstruction (T.FunctionCall name args value) =
-      allocateStackSpace
-        ++ passRegisterArguments
-        ++ passStackArguments
-        ++ [Call name]
-        ++ deallocateStackSpace
-        ++ saveReturnValue
+      pure $
+        allocateStackSpace
+          ++ passIntRegisterArguments
+          ++ passDoubleRegisterArguments
+          ++ passStackArguments
+          ++ [Call name]
+          ++ deallocateStackSpace
+          ++ saveReturnValue
       where
-        argRegisters :: [Reg]
-        argRegisters = [DI, SI, DX, CX, R8, R9]
-        (registerArgs, stackArgs) = splitAt (length argRegisters) args
+        (intRegArgs, dblRegArgs, stackArgs) = splitArgs args
         stackPadding = 8 * mod (length stackArgs) 2
         cleanupSize = stackPadding + 8 * length stackArgs
         {- HLINT ignore "Use list comprehension" -}
         allocateStackSpace = if stackPadding == 0 then [] else [AllocateStack stackPadding]
         deallocateStackSpace = if cleanupSize == 0 then [] else [DeallocateStack cleanupSize]
-        passRegisterArguments = zipWith movarg registerArgs argRegisters
+        passIntRegisterArguments = zipWith movarg intRegArgs intRegisters
+        passDoubleRegisterArguments = zipWith movarg dblRegArgs dblRegisters
         passStackArguments = concatMap movstk (reverse stackArgs)
-        saveReturnValue = [TwoOp Mov (asmValueType value) (Register AX) (translateValue value)]
+        saveReturnValue = [TwoOp Mov (asmValueType value) (returnRegister (asmValueType value)) (translateValue value)]
 
         movarg :: T.Value -> Reg -> Instruction
         movarg val reg = TwoOp Mov (asmValueType val) (translateValue val) (Register reg)
 
         movstk :: T.Value -> [Instruction]
-        movstk val = case translateValue val of
-          op@(Imm _) -> [Push op]
-          op@(Register _) -> [Push op]
-          op -> [TwoOp Mov (asmValueType val) op (Register AX), Push (Register AX)]
-    translateInstruction (T.SignExtend src dst) = [MovSX (translateValue src) (translateValue dst)]
-    translateInstruction (T.ZeroExtend src dst) = [MovZX (translateValue src) (translateValue dst)]
-    translateInstruction (T.Truncate src dst) = [TwoOp Mov Longword (translateValue src) (translateValue dst)]
-    translateInstruction (T.DoubleToInt src dst) = [Cvttsd2si (asmValueType dst) (translateValue src) (translateValue dst)]
+        movstk val = case asmValueType val of
+          Double ->
+            [ TwoOp Sub Quadword (Imm (IntValue 8)) (Register SP),
+              TwoOp Mov Double (translateValue val) (Memory $ Stack 0 "arg")
+            ]
+          _ -> case translateValue val of
+            op@(Imm _) -> [Push op]
+            op@(Register _) -> [Push op]
+            op -> [TwoOp Mov (asmValueType val) op (Register AX), Push (Register AX)]
+    translateInstruction (T.SignExtend src dst) = pure [MovSX (translateValue src) (translateValue dst)]
+    translateInstruction (T.ZeroExtend src dst) = pure [MovZX (translateValue src) (translateValue dst)]
+    translateInstruction (T.Truncate src dst) = pure [TwoOp Mov Longword (translateValue src) (translateValue dst)]
+    translateInstruction (T.DoubleToInt src dst) = pure [Cvttsd2si (asmValueType dst) (translateValue src) (translateValue dst)]
     translateInstruction (T.DoubleToUInt src dst)
-      | asmValueType dst == Quadword = []
-      | otherwise = []
-    translateInstruction (T.IntToDouble src dst) = [Cvtsi2sd (asmValueType src) (translateValue src) (translateValue dst)]
-    translateInstruction (T.UIntToDouble src dst) = []
+      | asmValueType dst == Quadword = do
+          label_oob <- uqName "oob"
+          label_end <- uqName "end"
+          return
+            [ TwoOp Cmp Double (Imm (DoubleValue longMaxPlus1)) (translateValue src),
+              JmpCC AE label_oob,
+              Cvttsd2si Quadword (translateValue src) (Register R11),
+              TwoOp Mov (asmValueType dst) (Register R11) (translateValue dst),
+              Jmp label_end,
+              Label label_oob,
+              TwoOp Mov Double (translateValue src) (Register XMM15),
+              TwoOp Sub Double (Imm (DoubleValue longMaxPlus1)) (Register XMM15),
+              Cvttsd2si Quadword (Register XMM15) (translateValue dst),
+              TwoOp AsmAst.Add (asmValueType dst) (Imm (IntValue (longMax + 1))) (translateValue dst),
+              Label label_end
+            ]
+      | otherwise =
+          pure
+            [ Cvttsd2si Quadword (translateValue src) (Register R11),
+              TwoOp Mov (asmValueType dst) (Register R11) (translateValue dst)
+            ]
+    translateInstruction (T.IntToDouble src dst) = pure [Cvtsi2sd (asmValueType src) (translateValue src) (translateValue dst)]
+    translateInstruction (T.UIntToDouble src dst) = pure []
 
+    longMax :: Integer
+    longMax = ((1 :: Integer) `shiftL` 63) - 1
+    longMaxPlus1 :: Double
+    longMaxPlus1 = 9223372036854775808.0 -- 2^63 as a double, the point at which unsigned values wrap around to negative when interpreted as signed
     translateUnary :: UnaryOperator -> OneOperandInstruction
     translateUnary Complement = Not
     translateUnary Negate = Neg
@@ -342,6 +387,28 @@ translateTACtoASM = fixImmediates . fixInstructions . replacePseudo . fixDoubleI
     translateValue (T.Constant _ c) = Imm c
     translateValue (T.Variable t False name) = Pseudo (asmType t) name
     translateValue (T.Variable _ True name) = Memory $ Data name
+
+    returnRegister :: AsmType -> Operand
+    returnRegister Double = Register XMM0
+    returnRegister Longword = Register AX
+    returnRegister Quadword = Register AX
+
+    intRegisters :: [Reg]
+    intRegisters = [DI, SI, DX, CX, R8, R9]
+    dblRegisters :: [Reg]
+    dblRegisters = [XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7]
+    splitArgs :: [T.Value] -> ([T.Value], [T.Value], [T.Value])
+    splitArgs = foldl step ([], [], [])
+      where
+        step (r1, r2, r3) x
+          | asmValueType x == Double && length r2 < length dblRegisters = (r1, r2 ++ [x], r3)
+          | asmValueType x /= Double && length r1 < length intRegisters = (r1 ++ [x], r2, r3)
+          | otherwise = (r1, r2, r3 ++ [x])
+
+    zero :: AsmType -> Operand
+    zero Longword = Imm (IntValue 0)
+    zero Quadword = Imm (IntValue 0)
+    zero Double = Imm (DoubleValue 0.0)
 
 data TransState = TransState
   { stackSize :: Int,
@@ -392,6 +459,14 @@ replacePseudo program = evalState (replacePseudoProg program) (TransState {stack
       src' <- replacePseudoOp src
       dst' <- replacePseudoOp dst
       return (MovZX src' dst')
+    replacePseudoIns (Cvtsi2sd t src dst) = do
+      src' <- replacePseudoOp src
+      dst' <- replacePseudoOp dst
+      return (Cvtsi2sd t src' dst')
+    replacePseudoIns (Cvttsd2si t src dst) = do
+      src' <- replacePseudoOp src
+      dst' <- replacePseudoOp dst
+      return (Cvttsd2si t src' dst')
     replacePseudoIns any = return any
 
     replacePseudoFun :: TopLevel -> TransM TopLevel
@@ -449,6 +524,10 @@ fixInstructions (Program fun) = Program (map fixInstructionsFun fun)
       [ TwoOp Mov t dst (scratchDstReg t),
         TwoOp Cmp t src (scratchDstReg t)
       ]
+    fixInstr (TwoOp Mov t@Double src@(Memory _) dst@(Memory _)) =
+      [ TwoOp Mov t src (scratchDstReg t),
+        TwoOp Mov t (scratchDstReg t) dst
+      ]
     fixInstr (TwoOp op t@Double src@(Memory _) dst@(Memory _)) =
       [ TwoOp Mov t dst (scratchDstReg t),
         TwoOp op t src (scratchDstReg t),
@@ -481,6 +560,23 @@ fixInstructions (Program fun) = Program (map fixInstructionsFun fun)
     fixInstr (MovZX src dst) =
       [ TwoOp Mov Longword src (Register R11),
         TwoOp Mov Quadword (Register R11) dst
+      ]
+    fixInstr (Cvttsd2si t src dst@(Memory _)) =
+      [ Cvttsd2si t src (scratchDstReg t),
+        TwoOp Mov t (scratchDstReg t) dst
+      ]
+    fixInstr (Cvtsi2sd t src@(Imm _) dst@(Memory _)) =
+      [ TwoOp Mov t src (scratchSrcReg t),
+        Cvtsi2sd t (scratchSrcReg t) (scratchDstReg Double),
+        TwoOp Mov Double (scratchDstReg Double) dst
+      ]
+    fixInstr (Cvtsi2sd t src dst@(Memory _)) =
+      [ Cvtsi2sd t src (scratchDstReg Double),
+        TwoOp Mov Double (scratchDstReg Double) dst
+      ]
+    fixInstr (Cvtsi2sd t src@(Imm _) dst) =
+      [ TwoOp Mov t src (scratchSrcReg t),
+        Cvtsi2sd t (scratchSrcReg t) dst
       ]
     fixInstr ins = [ins]
 
@@ -713,7 +809,7 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     emitOperand XMM (Register XMM7) = "%xmm7"
     emitOperand XMM (Register XMM14) = "%xmm14"
     emitOperand XMM (Register XMM15) = "%xmm15"
-    emitOperand sz reg = error $ "Internal Error: Invalid Register-Size combination in emitOperand: " ++ (show sz) ++ " and " ++ show reg
+    emitOperand sz reg = error $ "Internal Error: Invalid Register-Size combination in emitOperand: " ++ show sz ++ " and " ++ show reg
 
     reduceImm :: RegSize -> ConstValue -> Integer
     reduceImm Reg1 (IntValue n) = n `mod` 256
