@@ -55,14 +55,14 @@ main = do
     putStrLn (renderString (layoutPretty defaultLayoutOptions doc))
     exitSuccess
 
-  let (tac, nextID') = TAC.translate validated_ast symbolTable nextID
+  let (tac, _nextID) = TAC.translate validated_ast symbolTable nextID
 
   when (tackyOnly options) $ do
     let doc = pretty tac
     putStrLn (renderString (layoutPretty defaultLayoutOptions doc))
     exitSuccess
 
-  let asmast = translateTACtoASM nextID' tac
+  let asmast = translateTACtoASM tac
 
   when (codegenOnly options) $ do
     let doc = pretty asmast
