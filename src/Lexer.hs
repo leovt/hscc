@@ -136,7 +136,7 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
     step (LS_Integer start n, Right tokens) (c, pos)
       | c `elem` digits = (LS_Integer start (n ++ [c]), Right tokens)
       | c `elem` int_suffix = (LS_IntSuffix start n [c], Right tokens)
-      | c == '.' = (LS_DecimalDigits start n, Right tokens)
+      | c == '.' = (LS_DecimalDigits start (n ++ [c]), Right tokens)
       | c == 'e' || c == 'E' = (LS_Exponent start (n ++ [c]), Right tokens)
       | c `elem` id_continue = lexerError ("Unexpected in Integer " ++ [c])
       | otherwise = emitTokenAndConsume tokens (TokInt (read n) NoSuffix, Span start pos) (c, pos)
@@ -153,7 +153,7 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
       | otherwise = emitTokenAndConsume tokens (floatToken part, Span start pos) (c, pos)
     step (LS_DecimalDigits start part, Right tokens) (c, pos)
       | c `elem` digits = (LS_DecimalDigits start (part ++ [c]), Right tokens)
-      | c == 'e' || c == 'E' = (LS_Exponent start (part ++ [c]), Right tokens)
+      | c == 'e' || c == 'E' = (LS_Exponent start (if last part == '.' then part ++ ['0', c] else part ++ [c]), Right tokens)
       | c == '.' || c `elem` id_continue = lexerError ("Unexpected in Float " ++ [c])
       | otherwise = emitTokenAndConsume tokens (floatToken part, Span start pos) (c, pos)
     step (LS_Exponent start part, Right tokens) (c, _)
@@ -196,6 +196,7 @@ lexer = fmap reverse . snd . foldl step (LS_Start, Right []) . enumerateSourcePo
       where
         fix :: String -> String
         fix s@('.' : _) = '0' : s
+        fix s | last s == '.' = s ++ "0"
         fix s = s
 
     map_keyword "int" = TokKeyInt
