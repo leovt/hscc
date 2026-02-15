@@ -100,6 +100,7 @@ data Statement t
 data ConstValue
   = IntValue Integer
   | DoubleValue Double
+  | PackedDouble2Value Double
   deriving (Eq, Show, Ord)
 
 data Expression t

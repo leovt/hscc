@@ -27,6 +27,7 @@ data Program
 data ConstantBits
   = Bits32 Word32
   | Bits64 Word64
+  | Bits128 Word64
   deriving (Show, Eq, Ord)
 
 data TopLevel
@@ -205,6 +206,12 @@ translateTACtoASM n = fixImmediates . fixInstructions . replacePseudo . fixDoubl
           Quadword -> Bits64 (truncate init)
           Longword -> Bits32 (truncate init)
           Double -> Bits64 (castDoubleToWord64 init)
+    translateTopLevel (T.StaticVariable t name global (PackedDouble2Value init)) = pure $ StaticVariable (asmType t) name global init'
+      where
+        init' = case asmType t of
+          Quadword -> Bits64 (truncate init)
+          Longword -> Bits32 (truncate init)
+          Double -> Bits64 (castDoubleToWord64 init)
 
     translateInstruction :: T.Instruction -> UniqueIdM [Instruction]
     translateInstruction (T.Return value) =
@@ -221,8 +228,8 @@ translateTACtoASM n = fixImmediates . fixInstructions . replacePseudo . fixDoubl
     translateInstruction (T.Unary op src dst)
       | op == Negate && valueType src == ArithmeticType DoubleType =
           pure
-            [ TwoOp Mov (asmValueType dst) (Imm (DoubleValue 0.0)) (translateValue dst),
-              TwoOp Sub (asmValueType dst) (translateValue src) (translateValue dst)
+            [ TwoOp Mov (asmValueType dst) (translateValue src) (translateValue dst),
+              TwoOp Xor Double (Imm (PackedDouble2Value (-0.0))) (translateValue dst)
             ]
       | otherwise =
           pure
@@ -654,6 +661,15 @@ fixDoubleImmediates program = evalState (fixImmProg program) (FixDoubleImmState 
           let label = "const_double_" ++ showHex bits ""
           put $ state {constLabels = Data.Map.insert (Bits64 bits) label (constLabels state)}
           return $ Memory (Data label)
+    fixOp (Imm (PackedDouble2Value d)) = do
+      let bits = castDoubleToWord64 d
+      state <- get
+      case Data.Map.lookup (Bits128 bits) (constLabels state) of
+        Just label -> return $ Memory (Data label)
+        Nothing -> do
+          let label = "const_double_" ++ showHex bits ""
+          put $ state {constLabels = Data.Map.insert (Bits128 bits) label (constLabels state)}
+          return $ Memory (Data label)
     fixOp op = pure op
 
 emitProgram :: Program -> [String]
@@ -663,22 +679,23 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     emitTopLevel (Function name global instructions) =
       asmglobal global name ++ [name ++ ":", "    pushq %rbp", "    movq %rsp, %rbp"] ++ map emitInstruction instructions
     emitTopLevel (StaticVariable t name global init) =
-      asmglobal global name ++ [".data", alignmentOf t, name ++ ":", emitStaticData t init, ".text"]
+      asmglobal global name ++ [".data", alignmentOf init, name ++ ":", emitStaticData t init, ".text"]
     emitTopLevel (StaticConstant t name init) =
-      [".section .rodata", alignmentOf t, name ++ ":", emitStaticData t init, ".text"]
+      [".section .rodata", alignmentOf init, name ++ ":", emitStaticData t init, ".text"]
 
     asmglobal :: Bool -> String -> [String]
     asmglobal global name = if global then [".globl " ++ name] else []
 
-    alignmentOf :: AsmType -> String
-    alignmentOf Longword = ".align 4"
-    alignmentOf Quadword = ".align 8"
-    alignmentOf Double = ".align 8"
+    alignmentOf :: ConstantBits -> String
+    alignmentOf (Bits32 _) = ".align 4"
+    alignmentOf (Bits64 _) = ".align 8"
+    alignmentOf (Bits128 _) = ".align 16"
 
     emitStaticData :: AsmType -> ConstantBits -> String
     emitStaticData Longword (Bits32 x) = "    .long 0x" ++ showHex x ""
     emitStaticData Quadword (Bits64 x) = "    .quad 0x" ++ showHex x ""
     emitStaticData Double (Bits64 x) = "    .quad 0x" ++ showHex x ""
+    emitStaticData Double (Bits128 x) = "    .quad 0x" ++ showHex x "" ++ "\n    .quad 0"
     emitStaticData _ _ = error "Type mismatch between static variable and its initializer."
 
     emitInstruction :: Instruction -> String
@@ -723,6 +740,7 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     twoOp DivDbl t = "div" ++ typeSuffix t
     twoOp And t = "and" ++ typeSuffix t
     twoOp Or t = "or" ++ typeSuffix t
+    twoOp Xor Double = "xorpd"
     twoOp Xor t = "xor" ++ typeSuffix t
     twoOp ShLeft t = "sal" ++ typeSuffix t
     twoOp (ShRight Signed) t = "sar" ++ typeSuffix t
@@ -816,4 +834,5 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     reduceImm Reg4 (IntValue n) = (n + (1 `shiftL` 31)) `mod` (1 `shiftL` 32) - (1 `shiftL` 31)
     reduceImm Reg8 (IntValue n) = n
     reduceImm _ dv@(DoubleValue _) = error $ "Internal Error: double valued immediate " ++ show dv ++ " can not be emitted."
+    reduceImm _ dv@(PackedDouble2Value _) = error $ "Internal Error: packed double valued immediate " ++ show dv ++ " can not be emitted."
     reduceImm XMM val = error $ "Internal Error: use XMM for integers: " ++ show val
