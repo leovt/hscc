@@ -314,10 +314,6 @@ translateTACtoASM n = fixImmediates . fixInstructions . replacePseudo . fixDoubl
 
         movstk :: T.Value -> [Instruction]
         movstk val = case asmValueType val of
-          {- Double ->
-            [ TwoOp Sub Quadword (Imm (IntValue 8)) (Register SP),
-              TwoOp Mov Double (translateValue val) (Memory $ Stack 0 "arg")
-            ]-}
           Longword -> case translateValue val of
             op@(Imm _) -> [Push op]
             op@(Register _) -> [Push op]
@@ -351,7 +347,32 @@ translateTACtoASM n = fixImmediates . fixInstructions . replacePseudo . fixDoubl
               TwoOp Mov (asmValueType dst) (Register R11) (translateValue dst)
             ]
     translateInstruction (T.IntToDouble src dst) = pure [Cvtsi2sd (asmValueType src) (translateValue src) (translateValue dst)]
-    translateInstruction (T.UIntToDouble src dst) = pure []
+    translateInstruction (T.UIntToDouble src dst)
+      | asmValueType src == Longword =
+          pure
+            [ TwoOp Mov (asmValueType src) (translateValue src) (Register R10),
+              Cvtsi2sd Quadword (Register R10) (translateValue dst)
+            ]
+      | otherwise = do
+          label_oob <- uqName "oob"
+          label_end <- uqName "end"
+          return
+            [ TwoOp Cmp Quadword (Imm (IntValue 0)) (translateValue src),
+              JmpCC L label_oob,
+              TwoOp Mov (asmValueType src) (translateValue src) (Register R10),
+              Cvtsi2sd Quadword (Register R10) (translateValue dst),
+              Jmp label_end,
+              Label label_oob,
+              TwoOp Mov Quadword (translateValue src) (Register R10),
+              TwoOp Mov Quadword (Register R10) (Register R11),
+              TwoOp And Quadword (Imm (IntValue 1)) (Register R11),
+              TwoOp (ShRight Unsigned) Quadword (Imm (IntValue 1)) (Register R10),
+              TwoOp Or Quadword (Register R11) (Register R10),
+              Cvtsi2sd Quadword (Register R10) (Register XMM15),
+              TwoOp AsmAst.Add Double (Register XMM15) (Register XMM15),
+              TwoOp Mov Double (Register XMM15) (translateValue dst),
+              Label label_end
+            ]
 
     longMax :: Integer
     longMax = ((1 :: Integer) `shiftL` 63) - 1
