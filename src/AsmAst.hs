@@ -314,14 +314,16 @@ translateTACtoASM n = fixImmediates . fixInstructions . replacePseudo . fixDoubl
 
         movstk :: T.Value -> [Instruction]
         movstk val = case asmValueType val of
-          Double ->
+          {- Double ->
             [ TwoOp Sub Quadword (Imm (IntValue 8)) (Register SP),
               TwoOp Mov Double (translateValue val) (Memory $ Stack 0 "arg")
-            ]
-          _ -> case translateValue val of
+            ]-}
+          Longword -> case translateValue val of
             op@(Imm _) -> [Push op]
             op@(Register _) -> [Push op]
             op -> [TwoOp Mov (asmValueType val) op (Register AX), Push (Register AX)]
+          Quadword -> [Push $ translateValue val]
+          Double -> [Push $ translateValue val]
     translateInstruction (T.SignExtend src dst) = pure [MovSX (translateValue src) (translateValue dst)]
     translateInstruction (T.ZeroExtend src dst) = pure [MovZX (translateValue src) (translateValue dst)]
     translateInstruction (T.Truncate src dst) = pure [TwoOp Mov Longword (translateValue src) (translateValue dst)]
@@ -642,6 +644,10 @@ fixDoubleImmediates program = evalState (fixImmProg program) (FixDoubleImmState 
     fixImmediatesTop other = pure other
 
     fixInstr :: Instruction -> FixDbImmM [Instruction]
+    fixInstr (Cvttsd2si t src dst) = do
+      src' <- fixOp src
+      dst' <- fixOp dst
+      return [Cvttsd2si t src' dst']
     fixInstr (TwoOp op t src dst) = do
       src' <- fixOp src
       dst' <- fixOp dst
