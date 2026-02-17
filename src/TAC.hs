@@ -310,7 +310,7 @@ translate program (SymbolTable symtab) nextID' = (prog, nextID state)
       let destination = Variable t False varid
       (_, var') <- translateExpression var
       return
-        ( [ Binary P.Add var' (Constant t (IntValue 1)) destination,
+        ( [ Binary P.Add var' (Constant t (one t)) destination,
             Copy destination var'
           ],
           destination
@@ -320,7 +320,7 @@ translate program (SymbolTable symtab) nextID' = (prog, nextID state)
       let destination = Variable t False varid
       (_, var') <- translateExpression var
       return
-        ( [ Binary P.Subtract var' (Constant t (IntValue 1)) destination,
+        ( [ Binary P.Subtract var' (Constant t (one t)) destination,
             Copy destination var'
           ],
           destination
@@ -333,7 +333,7 @@ translate program (SymbolTable symtab) nextID' = (prog, nextID state)
       (_, var') <- translateExpression var
       return
         ( [ Copy var' destination,
-            Binary P.Add destination (Constant t (IntValue 1)) newvalue,
+            Binary P.Add destination (Constant t (one t)) newvalue,
             Copy newvalue var'
           ],
           destination
@@ -346,7 +346,7 @@ translate program (SymbolTable symtab) nextID' = (prog, nextID state)
       (_, var') <- translateExpression var
       return
         ( [ Copy var' destination,
-            Binary P.Subtract destination (Constant t (IntValue 1)) newvalue,
+            Binary P.Subtract destination (Constant t (one t)) newvalue,
             Copy newvalue var'
           ],
           destination
@@ -473,3 +473,7 @@ translate program (SymbolTable symtab) nextID' = (prog, nextID state)
                   DoubleToUInt value destination
                 _ -> error "Unsupported cast."
           return (instructions ++ [cast_instruction], destination)
+    one :: CType -> ConstValue
+    one (ArithmeticType (Integral _)) = IntValue 1
+    one (ArithmeticType DoubleType) = DoubleValue 1.0
+    one _ = error "Implementation Error: one for non-arithmetic type"
