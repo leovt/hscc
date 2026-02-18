@@ -75,7 +75,7 @@ data TwoOperandInstruction
   | ShRight Signed
   deriving (Show)
 
-data Condition = E | NE | G | GE | L | LE | A | AE | B | BE
+data Condition = E | NE | G | GE | L | LE | A | AE | B | BE | PF
   deriving (Show)
 
 data MemoryOperand
@@ -219,12 +219,9 @@ translateTACtoASM n = fixImmediates . fixInstructions . replacePseudo . fixDoubl
         [ TwoOp Mov (asmValueType value) (translateValue value) (returnRegister (asmValueType value)),
           Ret
         ]
-    translateInstruction (T.Unary LogicNot src dst) =
-      pure
-        [ TwoOp Cmp (asmValueType src) (zero (asmValueType src)) (translateValue src),
-          TwoOp Mov (asmType intT) (Imm (IntValue 0)) (translateValue dst),
-          SetCC E (translateValue dst)
-        ]
+    translateInstruction (T.Unary LogicNot src dst) = case valueType src of
+      t@(ArithmeticType DoubleType) -> translateInstruction (T.Binary Equal src (T.Constant t (DoubleValue 0.0)) dst)
+      t -> translateInstruction (T.Binary Equal src (T.Constant t (IntValue 0)) dst)
     translateInstruction (T.Unary op src dst)
       | op == Negate && valueType src == ArithmeticType DoubleType =
           pure
@@ -261,17 +258,30 @@ translateTACtoASM n = fixImmediates . fixInstructions . replacePseudo . fixDoubl
           TwoOp Mov (asmValueType left) (Register DX) (translateValue dst)
         ]
     translateInstruction (T.Binary op left right dst) =
-      pure $ case translateBinary (asmValueSign left) op of
+      case translateBinary (asmValueSign left) op of
         Arithmetic instruction ->
-          [ TwoOp Mov (asmValueType dst) (translateValue left) (translateValue dst),
-            TwoOp instruction (asmValueType dst) (translateValue right) (translateValue dst)
-          ]
-        Relational condition ->
-          let dest = translateValue dst
-           in [ TwoOp Cmp (asmValueType right) (translateValue right) (translateValue left),
-                TwoOp Mov (asmType intT) (Imm (IntValue 0)) dest,
-                SetCC condition dest
+          pure
+            [ TwoOp Mov (asmValueType dst) (translateValue left) (translateValue dst),
+              TwoOp instruction (asmValueType dst) (translateValue right) (translateValue dst)
+            ]
+        Relational condition -> case asmValueType left of
+          Double -> do
+            let dest = translateValue dst
+            end_label <- uqName "skip_setcc"
+            return
+              [ TwoOp Cmp (asmValueType right) (translateValue right) (translateValue left),
+                TwoOp Mov (asmType intT) (Imm (IntValue (if op == P.NotEqual then 1 else 0))) dest,
+                JmpCC PF end_label,
+                SetCC condition dest,
+                Label end_label
               ]
+          _ ->
+            let dest = translateValue dst
+             in pure
+                  [ TwoOp Cmp (asmValueType right) (translateValue right) (translateValue left),
+                    TwoOp Mov (asmType intT) (Imm (IntValue 0)) dest,
+                    SetCC condition dest
+                  ]
     translateInstruction (T.Copy src dst) =
       pure
         [ TwoOp Mov (asmValueType src) (translateValue src) (translateValue dst)
@@ -772,7 +782,7 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     twoOp ShLeft t = "sal" ++ typeSuffix t
     twoOp (ShRight Signed) t = "sar" ++ typeSuffix t
     twoOp (ShRight Unsigned) t = "shr" ++ typeSuffix t
-    twoOp Cmp Double = "comisd"
+    twoOp Cmp Double = "ucomisd"
     twoOp Cmp t = "cmp" ++ typeSuffix t
 
     oneOp :: OneOperandInstruction -> AsmType -> String
@@ -792,6 +802,7 @@ emitProgram (Program fun) = concatMap emitTopLevel fun ++ [".section .note.GNU-s
     cond AE = "ae"
     cond B = "b"
     cond BE = "be"
+    cond PF = "p"
 
     typeSuffix :: AsmType -> String
     typeSuffix Longword = "l"

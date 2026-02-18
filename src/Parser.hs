@@ -144,7 +144,7 @@ data BinaryOperator
   | GreaterOrEqual
   | Assignment
   | CompoundAssignment BinaryOperator
-  deriving (Show)
+  deriving (Eq, Show)
 
 binop :: Token -> Maybe BinaryOperator
 binop TokAsterisk = Just Multiply

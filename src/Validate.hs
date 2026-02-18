@@ -798,9 +798,10 @@ typecheck program = do
     tcCondition :: Expression () -> TypM (Expression CType)
     tcCondition expr = do
       cond <- tcExpression expr
-      if isScalarType (typeOf cond)
-        then pure cond
-        else throwError $ "Condition expression must be scalar (arithmetic or pointer), got " ++ show cond
+      case typeOf cond of
+        ArithmeticType DoubleType -> pure (Binary intT NotEqual cond (Constant (typeOf cond) (zero (typeOf cond))))
+        ArithmeticType (Integral _) -> pure cond
+        _ -> throwError $ "Condition expression must be scalar (arithmetic or pointer), got " ++ show cond
 
     convertTo :: CType -> Expression CType -> TypM (Expression CType)
     convertTo targetType expr = go targetType (typeOf expr) expr
