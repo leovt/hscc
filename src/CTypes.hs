@@ -22,6 +22,7 @@ import Data.Bits (Bits (shiftL))
 data CType
   = ArithmeticType ArithmeticType
   | FuncT CType [CType]
+  | Pointer CType
   deriving (Eq, Show)
 
 data Signed = Signed | Unsigned
@@ -79,6 +80,7 @@ isIntegralType _ = False
 
 isScalarType :: CType -> Bool
 isScalarType (ArithmeticType _) = True
+isScalarType (Pointer _) = True
 isScalarType _ = False
 
 truncateIntegral :: IntegralType -> Integer -> Integer

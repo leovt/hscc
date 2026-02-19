@@ -23,7 +23,7 @@ where
 import CTypes
 import Control.Monad (unless)
 import Data.Bits (shiftL)
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, isNothing)
 import Lexer (IntSuffix (..), LocatedToken, Token (..))
 
 parser :: [LocatedToken] -> Either String UntypedProgram
@@ -121,6 +121,8 @@ data UnaryOperator
   | PreDecrement
   | PostIncrement
   | PostDecrement
+  | AddressOf
+  | Dereference
   deriving (Eq, Show)
 
 data BinaryOperator
@@ -145,6 +147,13 @@ data BinaryOperator
   | Assignment
   | CompoundAssignment BinaryOperator
   deriving (Eq, Show)
+
+data Declarator
+  = DIdent String
+  | AbstractBase
+  | DPointer Declarator
+  | DFunc Declarator [(CType, Declarator)]
+  deriving (Show)
 
 binop :: Token -> Maybe BinaryOperator
 binop TokAsterisk = Just Multiply
@@ -230,29 +239,15 @@ parseProgram tokens = parseProgramSeq tokens []
         Nothing -> Left "expected declaration"
         Just (fun, rest) -> parseProgramSeq rest (fun : acc)
 
-parseFunction :: ScopeLevel -> String -> StorageClass -> CType -> [Token] -> Either String (FunctionDeclaration (), [Token])
-parseFunction scope name sclass ctype tail = do
-  let parse_params :: [(CType, Maybe String)] -> [Token] -> Either String ([(CType, Maybe String)], [Token])
-      parse_params [] (TokKeyVoid : TokCloseParen : rest) = return ([], rest)
-      parse_params [] (TokCloseParen : rest) = return ([], rest)
-      parse_params params tokens = do
-        let (types, rest) = span isTypeSpecifier tokens
-        ctype <- parseType types
-        let (maybeName, rest'') = case rest of
-              (TokIdent paramName : rest') -> (Just paramName, rest')
-              _ -> (Nothing, rest)
-        case rest'' of
-          TokCloseParen : rest''' -> return (params ++ [(ctype, maybeName)], rest''')
-          TokComma : rest''' -> parse_params (params ++ [(ctype, maybeName)]) rest'''
-          _ -> Left "expected parameter or ')'"
-  (params, rest) <- parse_params [] tail
-  case rest of
+parseFunction :: ScopeLevel -> String -> StorageClass -> CType -> [CType] -> [Maybe String] -> [Token] -> Either String (FunctionDeclaration (), [Token])
+parseFunction scope name sclass ret_type param_types param_names tail = do
+  case tail of
     TokOpenBrace : rest' -> do
       (block, rest'') <- parseBlock (TokOpenBrace : rest')
-      unless (all (isJust . snd) params) $
+      unless (all isJust param_names) $
         Left "all function parameters must have names"
-      return (FunctionDeclaration ctype name params (Just block) sclass scope, rest'')
-    TokSemicolon : rest -> return (FunctionDeclaration ctype name params Nothing sclass scope, rest)
+      return (FunctionDeclaration ret_type name (zip param_types param_names) (Just block) sclass scope, rest'')
+    TokSemicolon : rest -> return (FunctionDeclaration ret_type name (zip param_types param_names) Nothing sclass scope, rest)
     _ -> Left "expected function body or ';' after function declaration"
 
 parseBlock :: [Token] -> Either String (Block (), [Token])
@@ -461,15 +456,76 @@ parseType tokens = do
 parseDeclaration :: ScopeLevel -> [Token] -> Either String (Declaration (), [Token])
 parseDeclaration scope tokens = do
   let (specifiers, rest) = span isSpecifier tokens
-  (ctype, sclass) <- decodeSpecifiers specifiers
-  case rest of
-    ((TokIdent name) : TokOpenParen : rest) -> do
-      (decl, rest') <- parseFunction scope name sclass ctype rest
-      return (FunDecl decl, rest')
-    ((TokIdent name) : rest) -> do
-      (decl, rest') <- parseVariableDeclaration scope name sclass ctype rest
-      return (VarDecl decl, rest')
-    _ -> Left "expected declaration."
+  (base_type, sclass) <- decodeSpecifiers specifiers
+  (declarator, rest') <- parseDeclarator rest
+  (ctype, maybeName, paramNames) <- processDeclarator base_type declarator
+  name <- case maybeName of
+    Just n -> Right n
+    Nothing -> Left "declaration must have a name"
+
+  case ctype of
+    FuncT ret_type param_types -> do
+      (fun, rest'') <- parseFunction scope name sclass ret_type param_types paramNames rest'
+      return (FunDecl fun, rest'')
+    _ -> do
+      (var, rest'') <- parseVariableDeclaration scope name sclass ctype rest'
+      return (VarDecl var, rest'')
+
+parseDeclarator :: [Token] -> Either String (Declarator, [Token])
+parseDeclarator (TokAsterisk : rest) = do
+  (declarator, rest') <- parseDeclarator rest
+  return (DPointer declarator, rest')
+parseDeclarator tokens = parseDirectDeclarator tokens
+  where
+    parseDirectDeclarator :: [Token] -> Either String (Declarator, [Token])
+    parseDirectDeclarator tokens = do
+      (sdecl, rest) <- parseSimpleDeclarator tokens
+      case rest of
+        TokOpenParen : rest' -> do
+          (params, rest'') <- parseParameterList [] rest'
+          return (DFunc sdecl params, rest'')
+        _ -> return (sdecl, rest)
+
+    parseSimpleDeclarator :: [Token] -> Either String (Declarator, [Token])
+    parseSimpleDeclarator (TokIdent name : rest) = return (DIdent name, rest)
+    parseSimpleDeclarator (TokOpenParen : rest) = do
+      (declarator, rest') <- parseDeclarator rest
+      case rest' of
+        TokCloseParen : rest'' -> return (declarator, rest'')
+        _ -> Left "expected ')' after declarator"
+    parseSimpleDeclarator tokens = return (AbstractBase, tokens)
+
+    parseParameterList :: [(CType, Declarator)] -> [Token] -> Either String ([(CType, Declarator)], [Token])
+    parseParameterList [] (TokKeyVoid : TokCloseParen : rest) = return ([], rest)
+    parseParameterList [] (TokCloseParen : rest) = return ([], rest)
+    parseParameterList params tokens = do
+      let (types, rest) = span isTypeSpecifier tokens
+      ctype <- parseType types
+      (param_declarator, rest'') <- parseDeclarator rest
+      case rest'' of
+        TokCloseParen : rest''' -> return (params ++ [(ctype, param_declarator)], rest''')
+        TokComma : rest''' -> parseParameterList (params ++ [(ctype, param_declarator)]) rest'''
+        _ -> Left "expected parameter or ')'"
+
+processDeclarator :: CType -> Declarator -> Either String (CType, Maybe String, [Maybe String])
+processDeclarator t (DIdent name) = return (t, Just name, [])
+processDeclarator t AbstractBase = return (t, Nothing, [])
+processDeclarator t (DPointer d) = do
+  (t', maybeName, paramNames) <- processDeclarator (Pointer t) d
+  return (t', maybeName, paramNames)
+processDeclarator t (DFunc (DIdent name) params) = do
+  let process_param :: (CType, Declarator) -> Either String (CType, Maybe String)
+      process_param (ctype, decl) = do
+        processed <- processDeclarator ctype decl
+        case processed of
+          (FuncT _ _, _, _) -> Left "function parameters cannot be functions"
+          (t', maybeName, []) -> return (t', maybeName)
+          _ -> error "unexpected parameter declarator result"
+  processedParams <- mapM process_param params
+  let paramTypes = map fst processedParams
+      paramNames = map snd processedParams
+  return (FuncT t paramTypes, Just name, paramNames)
+processDeclarator _ (DFunc _ _) = Left "function declarator must have an identifier as its direct declarator"
 
 parseVariableDeclaration :: ScopeLevel -> String -> StorageClass -> CType -> [Token] -> Either String (VariableDeclaration (), [Token])
 parseVariableDeclaration scope name sclass ctype tokens = case tokens of
@@ -479,7 +535,7 @@ parseVariableDeclaration scope name sclass ctype tokens = case tokens of
       TokSemicolon : rest'' -> return (VariableDeclaration ctype name (Just expr) sclass scope, rest'')
       _ -> Left "expected ';' after variable declaration"
   (TokSemicolon : rest) -> return (VariableDeclaration ctype name Nothing sclass scope, rest)
-  _ -> Left "expected ';' or '=' after variable declaration"
+  _ -> Left $ "expected ';' or '=' after variable declaration" ++ show (take 5 tokens)
 
 parseFactor :: [Token] -> Either String (Expression (), [Token])
 parseFactor tokens = do
@@ -523,6 +579,12 @@ parseFactorPrefix (TokDblPlus : tail) = do
 parseFactorPrefix (TokDblMinus : tail) = do
   (expr, rest) <- parseFactor tail
   return (Unary () PreDecrement expr, rest)
+parseFactorPrefix (TokAmpersand : tail) = do
+  (expr, rest) <- parseFactor tail
+  return (Unary () AddressOf expr, rest)
+parseFactorPrefix (TokAsterisk : tail) = do
+  (expr, rest) <- parseFactor tail
+  return (Unary () Dereference expr, rest)
 parseFactorPrefix (TokOpenParen : tail) = do
   let (types, rest) = span isTypeSpecifier tail
   if null types
@@ -532,12 +594,15 @@ parseFactorPrefix (TokOpenParen : tail) = do
         TokCloseParen : rest'' -> return (expr, rest'')
         _ -> Left "expected ')'"
     else do
-      ctype <- parseType types
-      case rest of
+      base_type <- parseType types
+      (declarator, rest') <- parseDeclarator rest
+      (ctype, maybeName, _) <- processDeclarator base_type declarator
+      unless (isNothing maybeName) $ Left "type declaration in cast cannot have a name"
+      case rest' of
         TokCloseParen : tail' -> do
           (expr, rest') <- parseFactor tail'
           return (Cast ctype expr, rest')
-        _ -> Left "expected ')'"
+        _ -> Left $ "expected ')' (2) " ++ show rest
 parseFactorPrefix (token : _) = Left $ "unexpected token" ++ show token
 parseFactorPrefix [] = Left "unexpected end of input"
 

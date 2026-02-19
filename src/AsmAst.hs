@@ -396,6 +396,8 @@ translateTACtoASM n = fixImmediates . fixInstructions . replacePseudo . fixDoubl
     translateUnary PreDecrement = error "PreDecrement does not translate to a one operand form."
     translateUnary PostIncrement = error "PostIncrement does not translate to a one operand form."
     translateUnary PostDecrement = error "PostDecrement does not translate to a one operand form."
+    translateUnary AddressOf = error "AddressOf not implemented"
+    translateUnary Dereference = error "Dereference not implemented"
 
     translateBinary :: Signed -> BinaryOperator -> Binop
     translateBinary _ P.Add = Arithmetic AsmAst.Add
