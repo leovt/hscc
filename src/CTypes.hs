@@ -3,6 +3,7 @@ module CTypes
     commonType,
     isIntegralType,
     isScalarType,
+    isPointerType,
     truncateIntegral,
     intT,
     longIntT,
@@ -82,6 +83,10 @@ isScalarType :: CType -> Bool
 isScalarType (ArithmeticType _) = True
 isScalarType (Pointer _) = True
 isScalarType _ = False
+
+isPointerType :: CType -> Bool
+isPointerType (Pointer _) = True
+isPointerType _ = False
 
 truncateIntegral :: IntegralType -> Integer -> Integer
 truncateIntegral (IType Signed Int) n = (n + (1 `shiftL` 31)) `mod` (1 `shiftL` 32) - (1 `shiftL` 31)

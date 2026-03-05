@@ -10,7 +10,7 @@ module Validate
   )
 where
 
-import CTypes (ArithmeticType (..), CType (..), IntegralType (..), commonType, intT, isIntegralType, isScalarType, truncateIntegral)
+import CTypes (ArithmeticType (..), CType (..), IntegralType (..), commonType, intT, isIntegralType, isPointerType, isScalarType, truncateIntegral)
 import Control.Monad (unless, when, zipWithM)
 import Control.Monad.Except
 import Control.Monad.State
@@ -700,6 +700,17 @@ typecheck program = do
       expr' <- tcExpression expr
       requireScalar expr' "Logical not"
       return (Unary intT LogicNot expr')
+    tcExpression (Unary _ Dereference expr) = do
+      expr' <- tcExpression expr
+      case typeOf expr' of
+        Pointer t -> return (Unary t Dereference expr')
+        _ -> throwError $ "Dereference requires pointer operand, got " ++ show expr'
+    tcExpression (Unary _ AddressOf expr) = do
+      expr' <- tcExpression expr
+      case expr' of
+        Variable t _ -> return (Unary (Pointer t) AddressOf expr')
+        Unary _ Dereference inner -> return (Unary (typeOf inner) AddressOf expr')
+        _ -> throwError $ "Address-of operator requires lvalue, got " ++ show expr'
     tcExpression (Unary _ op expr) = do
       expr' <- tcExpression expr
       case op of
@@ -822,14 +833,18 @@ typecheck program = do
       return (commonT, left'', right'')
       where
         forceCommonType :: Expression CType -> Expression CType -> TypM CType
-        forceCommonType left right = case commonType (typeOf left) (typeOf right) of
-          Just t -> return t
-          Nothing ->
-            throwError $
-              "Incompatible types: "
-                ++ show (typeOf left)
-                ++ " and "
-                ++ show (typeOf right)
+        forceCommonType left right
+          | isNullPointerConstant left && isPointerType (typeOf right) = return (typeOf right)
+          | isNullPointerConstant right && isPointerType (typeOf left) = return (typeOf left)
+          | typeOf left == typeOf right = return (typeOf left)
+          | otherwise = case commonType (typeOf left) (typeOf right) of
+              Just t -> return t
+              Nothing ->
+                throwError $
+                  "Incompatible types: "
+                    ++ show (typeOf left)
+                    ++ " and "
+                    ++ show (typeOf right)
 
     requireScalar :: Expression CType -> String -> TypM ()
     requireScalar expr context = do
@@ -842,6 +857,10 @@ typecheck program = do
       unless (isIntegralType (typeOf expr)) $
         throwError $
           context ++ " operator requires integral type, got " ++ show expr
+
+isNullPointerConstant :: Expression CType -> Bool
+isNullPointerConstant (Constant (ArithmeticType (Integral _)) (IntValue 0)) = True
+isNullPointerConstant _ = False
 
 zero :: CType -> ConstValue
 zero (ArithmeticType (Integral _)) = IntValue 0
